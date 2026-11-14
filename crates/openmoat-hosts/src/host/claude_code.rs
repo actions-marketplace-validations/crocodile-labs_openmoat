@@ -23,6 +23,7 @@ mod post_tool_use;
 pub(crate) mod project_settings;
 mod session_start;
 mod settings;
+mod weekly;
 
 /// Every Claude Code tool `openmoat-hosts` maps to an action; a tool missing here
 /// never reaches `moat guard`.
@@ -127,6 +128,7 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         // The hooks reference, "Persist environment variables": each Bash
         // command runs the file's lines first (ADR-044).
         proxy_sessions: ProxySessions::EnvFile("CLAUDE_ENV_FILE"),
+        own_sandbox_off: None,
     }),
     // Merged over the user `settings.json`, where a key set wins
     // (`disableAllHooks`, `hooks`, `env`, …).
@@ -246,6 +248,7 @@ pub(crate) static SPEC: HostSpec = HostSpec {
             "tabs_create_mcp",
         ],
     }),
+    weekly: weekly::WEEKLY,
     ..HostSpec::BASE
 };
 

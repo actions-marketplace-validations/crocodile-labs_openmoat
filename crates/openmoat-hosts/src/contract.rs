@@ -25,6 +25,7 @@ mod run_facts;
 mod settings;
 mod system_settings;
 mod tool_token;
+mod weekly;
 mod windows_sandbox;
 mod workspace;
 
@@ -51,6 +52,10 @@ pub(crate) use settings::set;
 pub use settings::{SettingsFile, SettingsReader};
 pub use system_settings::{SystemFile, SystemSettingsSpec};
 pub use tool_token::ToolToken;
+pub use weekly::{
+    Checked, ConfigFormat, Proves, Runner, Weekly, WeeklyInstall, WeeklyPayload, WeeklyRun,
+    WeeklyRuns,
+};
 pub use windows_sandbox::{WindowsSandboxLevel, WindowsSandboxMode, WindowsSandboxReader};
 pub(crate) use workspace::Unchecked;
 pub use workspace::WorkspaceSpec;
@@ -210,6 +215,9 @@ pub struct HostSpec {
     /// documentation states; never a cloud provider's credentials, which the
     /// allowlist exists to withhold and a person can add by name.
     pub run_env: &'static [&'static str],
+    /// How CI's weekly check of the latest release runs the host, or why it
+    /// does not (`scripts/ci/latest-agents/agents.json` is written from it).
+    pub weekly: Weekly,
 }
 
 /// Where a host finds hook files for OpenMoat's event besides OpenMoat's own
@@ -572,6 +580,10 @@ pub struct SandboxSpec {
     /// How the sandbox's traffic to `openmoat proxy` carries an agent session
     /// when the policy sets `sandbox.proxy_port` (ADR-044).
     pub proxy_sessions: ProxySessions,
+    /// The command-line flag that turns the host's own sandbox off, which
+    /// `openmoat run` asks for: sandboxes do not nest, so the host's cannot
+    /// start inside OpenMoat's. `None` when the host has none to name.
+    pub own_sandbox_off: Option<&'static str>,
 }
 
 /// How a host sandbox's traffic to `openmoat proxy` carries an agent session

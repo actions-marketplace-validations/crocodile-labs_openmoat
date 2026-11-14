@@ -15,10 +15,6 @@ pub const ALLOWED_NAMES: &[(&str, usize)] = &[
     ("openmoat-cli/src/commands/bench/proof/os.rs", 1),
     // M3: a host's name in CLI text.
     ("openmoat-cli/src/commands/proxy.rs", 1),
-    ("openmoat-cli/src/commands/run.rs", 2),
-    ("openmoat-cli/src/commands/sandbox.rs", 1),
-    ("openmoat-cli/src/integrity.rs", 1),
-    ("openmoat-cli/src/sandbox/install.rs", 1),
     ("openmoat-cli/src/sandbox/seatbelt.rs", 1),
     // Not a host: OpenMoat's own `remote/settings.json` has the same name as
     // Claude Code's settings file.
@@ -127,12 +123,12 @@ pub const ALLOWED_IN_SHARED_TESTS: &[(&str, usize)] = &[
 
 /// `scripts/` (relative to it).
 pub const ALLOWED_IN_SCRIPTS: &[(&str, usize)] = &[
-    // H6: the weekly latest-agents check, the pinned agent binaries and the
-    // real-agent smoke test keep a host list of their own.
+    // H6: the weekly latest-agents check's helpers, the pinned agent binaries
+    // and the real-agent smoke test keep a host list of their own. The check
+    // itself reads its records, written from the specs, and each record's
+    // own script (`ci/latest-agents/hosts/<agent>.sh`) names only its host.
     ("ci/host-binaries.sh", 6),
-    ("ci/latest-agents.sh", 82),
     ("ci/latest-agents/after_call.py", 12),
-    ("ci/latest-agents/agents.json", 95),
     ("ci/latest-agents/agy_probe.py", 12),
     ("ci/latest-agents/check.py", 26),
     ("ci/latest-agents/fake_gemini.py", 3),

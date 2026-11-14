@@ -26,6 +26,7 @@ pub(crate) mod hook_file;
 mod project_settings;
 mod pre_tool;
 mod tab;
+mod weekly;
 
 use pre_tool::pre_tool_action;
 
@@ -98,6 +99,7 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         tiocsti_open_on_linux: false,
         // `sandbox.json` has no proxy setting.
         proxy_sessions: ProxySessions::NotProxied,
+        own_sandbox_off: None,
     }),
     // A project's `.cursor/hooks.json` runs its hooks beside the user's
     // (<https://cursor.com/docs/agent/hooks>, "Configuration").
@@ -152,6 +154,7 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         why: "Cursor documents neither how it starts tool commands nor a setting for them",
     },
     run_env: &["CURSOR_API_KEY"],
+    weekly: weekly::WEEKLY,
     ..HostSpec::BASE
 };
 
