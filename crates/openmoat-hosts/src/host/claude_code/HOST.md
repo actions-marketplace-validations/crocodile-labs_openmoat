@@ -26,9 +26,13 @@ Anthropic's Claude Code. Its `PreToolUse` format is also what the Continue CLI s
   file its `uri` names, else the working directory), `mcp__ide__executeCode` (`Unchecked`
   `McpTool`: at least `review`).
 - `EnterWorktree` with a `path` (`FsRead`).
-- Ungoverned: `Task`, `Skill`, `EnterWorktree` without a `path`, and any other tool.
+- Ungoverned: `Skill`, `EnterWorktree` without a `path`, and any other tool the matcher
+  matches (it is an unanchored regular expression: `Write` matches `TodoWrite`); `Task`
+  never reaches the hook.
 - A payload Cursor sends to this hook (it carries `cursor_version`) is read as Cursor's
   `preToolUse` ([`from_cursor.rs`](from_cursor.rs), below).
+- A payload another agent sends to this hook (Grok Build's envelope, or a tool the matcher
+  does not name) is read as an unknown tool ([`foreign.rs`](foreign.rs), below).
 
 The full table is in [ARCHITECTURE.md](../../../../../docs/ARCHITECTURE.md) §3.
 
@@ -45,6 +49,16 @@ OpenMoat's `review` is sent as Claude Code's `"ask"`, which Claude Code puts to 
   tools are named `mcp__<server>__<tool>`.
 - Project settings merged over the user's `settings.json`: `.claude/settings.json` and
   `.claude/settings.local.json`.
+- `@` file mentions: Claude Code reads a file the person names with `@` while it builds
+  the prompt, with no tool call, so no `PreToolUse` hook sees it. `openmoat init` puts
+  `CLAUDE_CODE_DISABLE_FILE_MENTIONS=1` in the user `settings.json`'s `env`
+  ([`hook_file.rs`](hook_file.rs)): Claude then gets the paths and reads them with its
+  file tools, which the hook decides and records, so a secret's read is denied. Claude Code reads the variable from 2.1.299, and only from the shell, user
+  or managed settings (<https://code.claude.com/docs/en/hooks>, `PreToolUse`); an
+  install without it is reported stale until `openmoat init` runs again, and `openmoat
+  uninstall` takes it out. Where the sandbox block is written, its `Read` deny rules keep
+  those paths out of a mention on older versions too; under `openmoat run` the OS
+  sandbox denies the read to Claude Code itself.
 
 Credentials: the login Claude Code keeps in a file (`.credentials.json` in its
 configuration directory on Linux and Windows, and on macOS when the Keychain refuses
@@ -116,6 +130,17 @@ own hooks win a conflict; it fails open on any exit but 0 and 2 for them and doe
 answered as a call that cannot prompt: a `review` is a deny, a `defer` no answer. A Cursor
 `sessionStart` decides nothing. This hook is not Cursor's protection: the Cursor hooks
 `openmoat init` installs are. With both set up, a call is recorded twice, once by each.
+
+## Run by other agents
+
+Grok Build reads `~/.claude/settings.json` and a project's `.claude/settings*.json`, and the
+Devin CLI loads `.claude/` hooks by default; both run them with their own tool names
+(`run_terminal_command`, `exec`), and only exit 2 or their own deny blocks there (ADR-097
+has the sources). A payload in Grok's envelope (`hookEventName`) or naming a tool the
+matcher does not name is read as an unknown tool: every path, URL and command its
+arguments name is checked, a `review` is a deny that says how to approve it, a `defer` no
+answer. Neither agent is protected by this: its own tools outside what the matcher maps
+onto them never reach the hook, and both run a call whose hook fails.
 
 ## Known gaps
 

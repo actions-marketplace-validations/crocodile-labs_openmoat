@@ -16,7 +16,9 @@ use crate::{HookEvent, HookRequest, Host, HostError};
 pub(crate) mod config_change;
 mod advisories;
 mod doc;
+mod foreign;
 mod from_cursor;
+mod hook_file;
 mod ide_tools;
 mod mcp;
 mod post_tool_use;
@@ -100,7 +102,7 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         dir_name: ".claude",
         config_file: "settings.json",
         hooks: HOOKS,
-        hook_file: HookLayout::Entries(&crate::wire::hook_file::nested::Nested),
+        hook_file: HookLayout::Entries(&hook_file::Settings),
         relaxed_keys: settings::RELAXED_KEYS,
         relaxed_check: crate::RelaxedCheck::ByKey,
         unpinned_keys: settings::UNPINNED_KEYS,
@@ -293,6 +295,11 @@ impl HostAdapter for Adapter {
     ) -> Result<HookRequest, HostError> {
         if from_cursor::sent_by_cursor(payload) {
             return from_cursor::parse(event, payload);
+        }
+        if matches!(event, None | Some(pre_tool_use::EVENT | post_tool_use::EVENT))
+            && foreign::sent_by_another_agent(payload, TOOL_MATCHER)
+        {
+            return foreign::parse(host, event, payload, TOOL_MATCHER);
         }
         match event {
             None | Some(pre_tool_use::EVENT) => {

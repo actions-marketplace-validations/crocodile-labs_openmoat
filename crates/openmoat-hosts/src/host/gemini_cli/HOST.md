@@ -1,7 +1,12 @@
 # Gemini CLI (`gemini-cli`)
 
 Gemini CLI (`gemini`, npm `@google/gemini-cli`), through its `BeforeTool` command hook
-(and `AfterTool` for what a call returned), checked against the source of 0.65.0. Since 2026-06-18 Gemini CLI signs individual
+(and `AfterTool` for what a call returned), checked against the source of 0.65.0.
+Changelog reviewed to 0.68.0 on 2026-11-14, not a schema check: hook changes only in
+`gemini hooks migrate` (a migrated Claude Code hook's timeout in milliseconds, 0.67;
+`SubagentStop` and merged definitions, 0.68, #30111); no `BeforeTool` or `AfterTool`
+payload or decision change listed, and `"ask"` read again in the 0.68.0 source
+(Reviews, below). Since 2026-06-18 Gemini CLI signs individual
 accounts in only with an API key or Vertex AI; Google's own sign-in for them moved to the
 Antigravity CLI ([its own host](../antigravity_cli/HOST.md)). Every fact here comes from
 [`gemini_cli.rs`](../gemini_cli.rs) and [`doc.rs`](doc.rs); if they disagree, the code wins.
@@ -52,7 +57,13 @@ The full table is in [ARCHITECTURE.md](../../../../../docs/ARCHITECTURE.md) §3.
 ## Reviews
 
 A `review`, sent as `"ask"`, makes Gemini CLI confirm the call with the person even where its own policy would
-not (YOLO and auto-edit included).
+not (YOLO and auto-edit included). The [hooks reference](https://geminicli.com/docs/hooks/reference/)
+lists only `allow` and `deny` (`block`), but the source still reads `"ask"` in 0.68.0:
+`HookDecision` includes it (`packages/core/src/hooks/types.ts`, `isAskDecision`),
+`evaluateBeforeToolHook` returns it (`scheduler/hook-utils.ts`), and the scheduler turns
+it into `PolicyDecision.ASK_USER` with a forced confirmation (`scheduler/scheduler.ts`,
+`_processToolCall`), all at tag `v0.68.0`. A hook that blocks still wins over one that
+asks (`hooks/hookAggregator.ts`). A `deny` (exit 2 too) blocks the call.
 
 ## Configuration and MCP files
 
