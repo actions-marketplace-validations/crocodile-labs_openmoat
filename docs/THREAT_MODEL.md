@@ -1332,7 +1332,23 @@ something OpenMoat claims to stop.
   mode. *At session start:* Claude Code loads the files of a cloned or checked-out
   project before any hook runs, and no `ConfigChange` fires, so OpenMoat cannot stop
   them; when hooks are off, `openmoat guard` never runs and records nothing. `openmoat doctor`
-  and `openmoat status` warn when the current project's files set these keys. Only Claude
+  and `openmoat status` warn when the current project's files set these keys.
+  `openmoat run` starts Claude Code with `--settings '{"disableAllHooks":false}'`
+  before the person's arguments on every run (ADR-098), so a project file loaded at the
+  start or reloaded mid-session cannot turn the hooks off; not when the person passes
+  their own `--settings` (then a project file that turns the hook off stops the run,
+  unless their own policy says `sandbox.project_hook_off: start`, recorded) and not when
+  their own settings turn hooks off (said, recorded). For the other hosts a project file
+  of each folder from the working directory to the project root that turns the
+  installed hook off (each host's key its spec's `hook_off` names) stops the run,
+  recorded, unless OpenMoat's managed hook outlasts the project or the person's own
+  policy says `start`. An agent started outside `openmoat run` is not checked, nor a
+  program OpenMoat cannot tell as an agent (`npx`, `env`, a wrapper). `openmoat init
+  --managed` writes OpenMoat's hook into `managed-settings.d/50-openmoat.json` (and
+  GitHub Copilot CLI's `policy.d`, Cursor's enterprise `hooks.json`); where the folder
+  needs root it prints the command. Claude Code applies one managed source by default,
+  so a server-managed policy, a device profile or the Windows `HKLM` value takes the
+  drop-in's place; OpenMoat sees the macOS profile, not the others. Only Claude
   Code managed settings make hooks immune: with OpenMoat's hook in managed settings,
   a `disableAllHooks` outside them cannot turn it off, and `allowManagedHooksOnly`
   also blocks user, project and local hooks and narrows `statusLine` to managed

@@ -31,9 +31,11 @@ use crate::contract::{
 };
 use crate::{HookEvent, HookRequest, Host, HostError};
 
+mod hook_off;
 mod advisories;
 mod bench;
 mod doc;
+mod plugin;
 pub(crate) mod hook_file;
 mod mcp;
 mod post_tool_use;
@@ -150,6 +152,8 @@ pub(crate) static SPEC: HostSpec = HostSpec {
     },
     run_env: &["COPILOT_GITHUB_TOKEN"],
     weekly: weekly::WEEKLY,
+    hook_off: hook_off::HOOK_OFF,
+    plugin: crate::contract::Plugin::Package(&plugin::SPEC),
     ..HostSpec::BASE
 };
 

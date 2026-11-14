@@ -16,9 +16,11 @@ mod docs;
 mod heartbeat;
 mod hook_failure;
 mod hook_file;
+mod hook_off;
 mod hook_trust;
 mod location;
 mod mcp;
+mod plugin;
 mod protect;
 mod relaxed;
 mod reviews;
@@ -38,6 +40,9 @@ pub use docs::{HostDocs, ToolRow};
 pub use heartbeat::{Activity, HEARTBEAT_FLAG, Heartbeat};
 pub use hook_failure::{FailureOutcome, HookFailure};
 pub use hook_file::HookLayout;
+pub use hook_off::{
+    HookOff, Managed, ManagedHooks, ManagedShape, ProjectFile, ProjectOff, SessionOverride,
+};
 pub use hook_trust::HookTrust;
 pub use location::{Locate, Located, Location};
 pub use mcp::{
@@ -45,6 +50,7 @@ pub use mcp::{
     McpSpec, McpSyntax,
 };
 pub(crate) use mcp::{McpServersJson, Prefixed, escape, server, servers_at, spelled};
+pub use plugin::{Marketplace, Meta, Plugin, PluginFile, PluginSpec, StandAside};
 pub use protect::{Helper, Paths, ProcessSpec, Protect, RunsLater};
 pub use relaxed::{KeyShape, RelaxedCheck, RelaxedKey};
 pub use reviews::{Reviews, Unseen};
@@ -208,6 +214,11 @@ pub struct HostSpec {
     /// The settings an administrator deploys for the whole machine, which
     /// outrank the person's own; `None` for a host OpenMoat reads none of.
     pub system_settings: Option<SystemSettingsSpec>,
+    /// What a project's files can do to OpenMoat's user hook when a session
+    /// starts, the option that keeps it on for one session, and where an
+    /// administrator's hooks live (ADR-098): `openmoat run` reads the first
+    /// before it starts the agent, `openmoat init --managed` writes the last.
+    pub hook_off: HookOff,
     /// How `openmoat run` keeps its relay token from the host's tool commands
     /// (ADR-075).
     pub tool_token: ToolToken,
@@ -223,6 +234,9 @@ pub struct HostSpec {
     /// How CI's weekly check of the latest release runs the host, or why it
     /// does not (`scripts/ci/latest-agents/agents.json` is written from it).
     pub weekly: Weekly,
+    /// The package the host's own plugin channel installs OpenMoat from, or
+    /// why it has none (ADR-099); `plugins/` is generated from it.
+    pub plugin: Plugin,
 }
 
 /// Where a host finds hook files for OpenMoat's event besides OpenMoat's own

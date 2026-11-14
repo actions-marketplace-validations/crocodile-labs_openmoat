@@ -79,6 +79,34 @@ fn lines(
     out
 }
 
+/// The folders where each host keeps OpenMoat's package from its own plugin
+/// channel (ADR-099, `PluginSpec::installed`), as taint globs: `kernel-self`
+/// denies writing them, so session taint protects them too. A home path is
+/// matched wherever it lies (`~/` becomes `**/`, as the hosts' own taint lines do).
+fn plugin_taint_lines(comment: fn(&str) -> String, glob: fn(&str) -> String) -> String {
+    let mut out = String::new();
+    for host in Host::EVERY {
+        let Some(spec) = openmoat_hosts::plugin::spec(host) else {
+            continue;
+        };
+        if spec.installed.globs.is_empty() {
+            continue;
+        }
+        for line in spec.installed.why.lines() {
+            out.push_str(&comment(line));
+            out.push('\n');
+        }
+        for g in spec.installed.globs {
+            let g = g
+                .strip_prefix("~/")
+                .map_or_else(|| (*g).to_owned(), |rest| format!("**/{rest}"));
+            out.push_str(&glob(&g));
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// `text` with what lies between the line ending in `before` and the line
 /// `after` that follows it replaced by `body`.
 fn splice(text: &str, before: &str, after: &str, body: &str) -> Result<String, String> {
@@ -117,14 +145,35 @@ fn check(file: &str, before: &str, after: &str, body: &str) {
     );
 }
 
+/// Each host's `kernel-self` paths, then the folder where it keeps OpenMoat's
+/// package from its own plugin channel once installed (ADR-099,
+/// `PluginSpec::installed`), in the host list's order.
+fn self_lines() -> String {
+    let mut out = String::new();
+    for host in Host::EVERY {
+        let installed = openmoat_hosts::plugin::spec(host)
+            .map(|spec| &spec.installed)
+            .filter(|paths| !paths.globs.is_empty());
+        for paths in host.spec().protect.self_paths.iter().chain(installed) {
+            for line in paths.why.lines() {
+                let _ = writeln!(out, "      # {line}");
+            }
+            for glob in paths.globs {
+                let _ = writeln!(out, "      - \"{glob}\"");
+            }
+        }
+    }
+    out
+}
+
 #[test]
 fn the_default_policy_protects_each_hosts_own_files() {
-    let body = lines(
-        |p| p.self_paths,
-        |line| format!("      # {line}"),
-        |glob| format!("      - \"{glob}\""),
-    );
+    let body = self_lines();
     assert!(body.contains("~/.copilot/hooks/**"), "{body}");
+    assert!(
+        body.contains("~/.claude/plugins/cache/crocodile-labs/openmoat/**"),
+        "{body}"
+    );
     check(POLICY, POLICY_BEFORE, POLICY_AFTER, &body);
 }
 
@@ -240,6 +289,7 @@ fn the_taint_list_protects_each_hosts_own_files() {
     let glob = |glob: &str| format!("    \"{glob}\",");
     let mut body = lines(|p| p.taint, comment, glob);
     body.push_str(&convention_lines(|c| c.taint, comment, glob));
+    body.push_str(&plugin_taint_lines(comment, glob));
     assert!(body.contains("**/.copilot/hooks/**"), "{body}");
     assert!(body.contains("\"**/.agents/skills/**\""), "{body}");
     check(TAINT, TAINT_BEFORE, CORE_AFTER, &body);
@@ -283,11 +333,20 @@ fn the_default_policy_lets_each_host_read_its_temporary_folders() {
 fn managed_settings_lines() -> String {
     let mut out = String::new();
     for host in Host::EVERY {
-        let Some(system) = &host.spec().system_settings else {
+        let spec = host.spec();
+        // The system settings it reads, then the place of an administrator's
+        // hooks (ADR-098), which `openmoat init --managed` may write.
+        let files: Vec<&openmoat_hosts::SystemFile> = spec
+            .system_settings
+            .iter()
+            .flat_map(|system| system.files)
+            .chain(spec.hook_off.managed.locations())
+            .collect();
+        if files.is_empty() {
             continue;
-        };
+        }
         let mut folders: Vec<&str> = Vec::new();
-        for file in system.files {
+        for file in files {
             let (folder, _) = file.path.rsplit_once('/').unwrap();
             assert!(
                 is_own_folder(folder),
@@ -295,7 +354,11 @@ fn managed_settings_lines() -> String {
                  writes to a shared system folder",
                 file.path
             );
-            if !folders.contains(&folder) {
+            // A folder inside one already listed is covered by its `/**`.
+            let covered = folders
+                .iter()
+                .any(|f| *f == folder || folder.starts_with(&format!("{f}/")));
+            if !covered {
                 folders.push(folder);
             }
         }

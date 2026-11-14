@@ -219,7 +219,22 @@ pub struct InitArgs {
     pub verbose: bool,
 
     #[command(flatten)]
+    pub managed: InitManagedArgs,
+
+    #[command(flatten)]
     pub mcp: InitMcpArgs,
+}
+
+/// `init`'s managed hook flag (ADR-098).
+#[derive(Debug, Args)]
+pub struct InitManagedArgs {
+    /// Also write OpenMoat's hook where an administrator's hooks live, for each
+    /// agent set up that has such a place (its managed settings, policy or
+    /// enterprise hooks), so a repository's settings cannot turn it off. A
+    /// person at a terminal only. Where the file needs root, OpenMoat prints
+    /// the command that installs it instead.
+    #[arg(long)]
+    pub managed: bool,
 }
 
 /// `init`'s MCP proxy flags.
@@ -638,6 +653,12 @@ pub struct GuardArgs {
     /// (run by the plugin as it loads; `openmoat status` reports it).
     #[arg(long)]
     pub heartbeat: bool,
+    /// Run from an OpenMoat package installed through the agent's own plugin
+    /// channel (ADR-099): decide the call, or give no decision where `openmoat
+    /// init`'s own hook for the agent is installed and pinned, so each call is
+    /// decided once. `openmoat doctor` reports what it did last.
+    #[arg(long, conflicts_with = "home")]
+    pub plugin: bool,
     /// The state directory to decide with, as `openmoat init` writes it into
     /// the hook (ADR-071). It wins over `MOAT_HOME`, and a `MOAT_HOME` that
     /// names another directory makes the guard deny.

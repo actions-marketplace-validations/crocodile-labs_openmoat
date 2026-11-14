@@ -5,7 +5,7 @@
 > [!NOTE]
 > **Read this when** you install or upgrade OpenMoat on macOS, Linux or Windows, run `openmoat init`, want to know what each agent's hook covers, or use other config directories.
 
-**On this page:** [Install](#install) · [Set up with openmoat init](#set-up-with-openmoat-init) · [Undo with openmoat uninstall](#undo-with-openmoat-uninstall) · [Upgrading](#upgrading) · [Keep openmoat proxy running as a user service](#keep-openmoat-proxy-running-as-a-user-service) · [Teams: managed settings](#teams-managed-settings) · [Non-default config directories](#non-default-config-directories)
+**On this page:** [Install](#install) · [Set up with openmoat init](#set-up-with-openmoat-init) · [Install from an agent's plugin channel (preview)](#install-from-an-agents-plugin-channel-preview) · [Undo with openmoat uninstall](#undo-with-openmoat-uninstall) · [Upgrading](#upgrading) · [Keep openmoat proxy running as a user service](#keep-openmoat-proxy-running-as-a-user-service) · [Teams: managed settings](#teams-managed-settings) · [Non-default config directories](#non-default-config-directories)
 
 In short: install the binary, run `openmoat init` in your own terminal, and start a new
 agent session. `openmoat init` writes the default policy, asks before it hooks each agent
@@ -199,6 +199,154 @@ calls or commands. See [Codex's host contract](../crates/openmoat-hosts/src/host
 | goose | `PreToolUse` for every tool (no matcher), `on_failure: block`, 60 s, in OpenMoat's plugin: `shell` (`cmd` on Windows: `unparseable`), `write`, `edit`, `tree`, `analyze`, `read_image`, every extension tool (`<extension>__<tool>`, MCP extensions included), and a tool OpenMoat does not know by what its arguments name. goose hooks cannot prompt, so a `review` blocks the call until you run `openmoat allow --last`. Code Mode's `execute_javascript` needs review: the tools its script calls skip the hook | `~/.agents/plugins/openmoat/hooks/hooks.json` |
 | Continue CLI (`cn`) | Runs the Claude Code hook, recorded as host `continue`. `cn` ignores Claude Code's `"ask"`, so a `review` blocks the call until you run `openmoat allow --last`. The released `cn` does not run hooks, so nothing is checked; use `openmoat run` (`openmoat doctor` warns). [Continue's repository](https://github.com/continuedev/continue) is no longer maintained and is read-only | Claude Code's |
 
+## Install from an agent's plugin channel (preview)
+
+> [!NOTE]
+> **Preview.** The packages below are in the repository's
+> [`plugins/`](../plugins/README.md) folder, generated from the host specs
+> ([ADR-099](adr/ADR-099-plugin-packages.md)). None is listed in its channel yet; until
+> one is, install it from the folder or keep using `openmoat init` alone.
+
+Each agent below can take OpenMoat's hook from its own plugin channel in one step. A
+package holds no binary and downloads nothing: you still install `openmoat` and run
+`openmoat init` once, which writes the policy and its lock. The package runs
+`openmoat guard --host <id> --plugin` with the `openmoat` the policy lock pins (`binary`
+in `~/.moat/policy.lock`, the path `openmoat init` recorded). Before there is a lock it
+looks in `~/.cargo/bin` and Homebrew's folder, then on the search path; the guard then
+denies every call anyway.
+
+- **No `openmoat`**, or it gives no answer: every call is blocked, and the message
+  names the install command (`brew install crocodile-labs/tap/openmoat`, then
+  `openmoat init`). A lock that names no program the package can run blocks every call
+  too.
+- **No policy lock** (`openmoat init` not run yet): every call is denied, and the reason
+  says to run `openmoat init`.
+- **`openmoat init`'s own hook installed for the agent as well**: the package gives no
+  decision (on Cursor, `allow`, which never changes what the other hook answers), so
+  each call is decided once, by `init`'s hook, which the lock pins and which runs the
+  binary by its path. The package stands aside only when all of these hold:
+  - the lock is intact;
+  - it pins the hook file this agent reads, taken from the agent's own environment
+    (its `CLAUDE_CONFIG_DIR` and the like, else the default folder), never from where
+    `init` last ran;
+  - OpenMoat's entry there is the one `init` wrote;
+  - no settings file the agent reads, yours or the project's, turns that hook off;
+  - for pi, OpenCode and OpenClaw, `init`'s plugin has itself reported loading since
+    it last changed. A call the package decided does not count.
+
+  Otherwise the package decides.
+- **Only the package**: it decides each call as `init`'s hook would. Answer `n` for that
+  agent in `openmoat init` to keep it that way.
+
+`openmoat doctor` reports each package that ran: when, and whether it stood aside for
+`init`'s hook or decided itself (`~/.moat/plugins/<id>.json`). The default policy's
+`kernel-self` keeps an agent from changing the folder where its host keeps OpenMoat's
+package, by that folder's name: another plugin's folder is left as it was.
+
+**With a package alone**, without `openmoat init`'s hook:
+
+- The package is outside the lock. The agent may update it, and you or a project's
+  settings may turn it off, without OpenMoat seeing it.
+- It decides only with the default state directory, `~/.moat`; a `MOAT_HOME` that names
+  another one is denied. It finds the lock from the agent's `HOME`.
+- A plugin's report that `init`'s plugin loaded stays valid until that plugin's file or
+  the agent's program changes; it says nothing about the process now running.
+- The guard scripts are POSIX `sh`, so on native Windows use `openmoat init`.
+
+`openmoat init`'s hook names its binary and state directory itself and is pinned by the
+lock, so it stays the setup to rely on.
+
+### Claude Code
+
+```bash
+claude plugin marketplace add crocodile-labs/openmoat-plugins
+claude plugin install openmoat@crocodile-labs
+```
+
+The plugin (`plugins/claude-code`) carries the four hooks `openmoat init` writes, with
+`onFailure: "block"` (Claude Code 2.1.295 or later). Before the marketplace repository
+exists, add the folder itself: `claude plugin marketplace add ./plugins`.
+
+### Cursor
+
+In Cursor: **Customize**, find OpenMoat in the Marketplace, **Install**. Before it is
+listed, copy `plugins/cursor` to `~/.cursor/plugins/local/openmoat` and run
+**Developer: Reload Window**. The plugin carries the five hooks `openmoat init` writes,
+each with `failClosed: true`.
+
+### Gemini CLI
+
+```bash
+gemini extensions install https://github.com/crocodile-labs/openmoat-gemini
+```
+
+Before that repository exists: `gemini extensions link plugins/gemini-cli`. The
+extension's `BeforeTool` hook is the one `openmoat init` writes; Gemini CLI's limits
+stay (a hook that times out or exits 1 lets the call run; untrusted folders run no hooks).
+
+### GitHub Copilot CLI
+
+```bash
+copilot plugin install crocodile-labs/openmoat:plugins/copilot-cli
+```
+
+Needs Copilot CLI 1.0.111 or later, which runs a plugin's hook in the plugin's folder.
+
+### OpenCode
+
+```bash
+opencode plugin add @openmoat/opencode
+```
+
+The package is `init`'s OpenCode plugin (OpenCode 1 and 2) finding `openmoat` on the
+search path, under the id `openmoat-npm` so both can be loaded. Restart OpenCode
+(OpenCode 2: `opencode service restart`).
+
+### pi
+
+```bash
+pi install npm:@openmoat/pi
+```
+
+The package is `init`'s pi extension finding `openmoat` on the search path.
+
+### OpenClaw
+
+```bash
+openclaw plugins install clawhub:@openmoat/openclaw
+```
+
+The package is `init`'s OpenClaw plugin under the id `openmoat-clawhub`, so both can be
+loaded; restart the Gateway. It takes OpenClaw's default handler timeout (15 s) unless
+you set `plugins.entries.openmoat-clawhub.hooks.timeouts.before_tool_call`; `openmoat
+init` sets 60 s for its own.
+
+### Hermes Agent
+
+```bash
+hermes plugins install openmoat && hermes plugins enable openmoat
+```
+
+A Python plugin whose `pre_tool_call` callback sends the call to `openmoat guard` and
+returns a block for every failure (Hermes skips a callback that raises).
+
+### Antigravity CLI
+
+```bash
+agy plugin install https://github.com/crocodile-labs/openmoat-antigravity
+```
+
+Antigravity CLI is a preview host: check that the hook fires (`openmoat doctor` shows
+the package's last run) before you rely on it. Its build-plugins guide says a plugin
+hook must exit 0 with its JSON answer and that any other exit is ignored, so the
+package blocks with the deny on stdout and exit 0.
+
+### Codex, Cline and goose
+
+No package: Codex's Plugins Directory does not take plugins that carry hooks, Cline's
+SDK plugins wait 3 s and ignore a failed hook, and goose has no registry for hook plugins
+(`openmoat init` already writes OpenMoat as an Open Plugins folder). Use `openmoat init`.
+
 ## Undo with `openmoat uninstall`
 
 ```bash
@@ -289,7 +437,7 @@ Read the [CHANGELOG](../CHANGELOG.md) entries since your version first; so far t
 kinds of change have happened:
 
 - **The audit log schema moves forward** (version 3 in 0.5.0, version 4 in 0.6.0,
-  version 5 in 0.11.0, version 7 in 0.12.0, version 8 in 0.14.0, version 10 in 0.16.0). The
+  version 5 in 0.11.0, version 7 in 0.12.0, version 8 in 0.14.0, version 10 in 0.16.0, version 11 in the release after 0.21.0). The
   new `openmoat` updates the log when it first opens it; an older `openmoat` then refuses to
   open it (`schema too new`), and its hook denies every call. Going back to an older
   release is not supported.
@@ -373,11 +521,38 @@ again so the service file names the new path.
 `openmoat init` writes OpenMoat's Claude Code hooks to the user `settings.json`. A
 repository's `.claude/settings.json` can turn every user-level hook off with
 `"disableAllHooks": true`, and Claude Code loads it when a session starts, before any
-hook runs. OpenMoat blocks such a change mid-session and `openmoat doctor` and `openmoat status`
-warn about it, but cannot stop it at start (THREAT_MODEL §5). Only Claude Code's
+hook runs. OpenMoat blocks such a change mid-session, `openmoat doctor` and `openmoat status`
+warn about it, and `openmoat run` starts Claude Code with `--settings
+'{"disableAllHooks":false}'` on every run (or refuses where you pass your own
+`--settings`; POLICY.md §9.5, ADR-098), but an
+agent started directly loads it (THREAT_MODEL §5). Only Claude Code's
 [managed settings](https://code.claude.com/docs/en/managed-settings), which an
 administrator deploys and the user cannot edit, make the hooks immune: a `disableAllHooks`
-outside them cannot turn off a hook set in them. For teams:
+outside them cannot turn off a hook set in them.
+
+```bash
+openmoat init --managed
+```
+
+writes the same entries `openmoat init` writes to the user file into a drop-in of its
+own, `managed-settings.d/50-openmoat.json`, and does the same for the other agents set
+up that have such a place: GitHub Copilot CLI's policy hooks (`policy.d/openmoat.json`,
+which a repository's `disableAllHooks` cannot turn off either) and Cursor's enterprise
+`hooks.json` (only while there is none, or it holds OpenMoat's hook alone). It needs a
+person at a terminal. Where the folder needs root, or the agent loads the file only when
+root owns it (Copilot CLI), OpenMoat keeps the file at `~/.moat/managed/<agent>.json` and
+prints the `sudo install` command to run; it never escalates itself. It is idempotent and
+never edits an administrator's own file; `openmoat uninstall` removes it (or prints the
+command that does), and `openmoat doctor` reports it. Codex's `requirements.toml`, Gemini
+CLI's system settings and OpenCode's system directory are named but not written: each is
+an administrator's one file, or its behaviour towards a project is not documented.
+
+The managed file applies to every account of the machine and runs this person's
+`openmoat` with their state directory: use it on a machine one person uses, or in an
+image an administrator builds. Claude Code applies one managed source: a device profile
+or server-managed settings take the files' place.
+
+For teams that deploy managed settings themselves:
 
 1. Copy the `PreToolUse`, `PostToolUse`, `ConfigChange` and `SessionStart` entries `openmoat init` wrote to
    `~/.claude/settings.json` (they run `openmoat` by its stable path, ADR-016) into the
@@ -387,8 +562,9 @@ outside them cannot turn off a hook set in them. For teams:
    plugin hooks (except plugins the managed settings force on) and to take `statusLine`
    and file suggestion commands only from managed settings.
 
-OpenMoat does not write or pin managed settings; whoever deploys them keeps them in step
-with `openmoat init` after an upgrade that changes the hook entries.
+OpenMoat does not pin managed settings; whoever deploys them keeps them in step with
+`openmoat init` after an upgrade that changes the hook entries (`openmoat doctor` says
+when OpenMoat's drop-in is outdated).
 
 `openmoat status` and `openmoat doctor` read the system-wide settings of three agents,
 without changing them, and call the agent not protected when they keep its hook from

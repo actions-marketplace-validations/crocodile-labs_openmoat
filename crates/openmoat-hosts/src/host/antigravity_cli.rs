@@ -41,8 +41,10 @@ use crate::contract::{
 };
 use crate::{HookEvent, HookRequest, Host, HostError, Replacement};
 
+mod hook_off;
 mod bench;
 mod doc;
+mod plugin;
 pub(crate) mod hook_file;
 mod location;
 mod mcp;
@@ -171,6 +173,8 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         writes: &[crate::RunWrite::Home(".gemini/antigravity-cli")],
     },
     weekly: weekly::WEEKLY,
+    hook_off: hook_off::HOOK_OFF,
+    plugin: crate::contract::Plugin::Package(&plugin::SPEC),
     ..HostSpec::BASE
 };
 

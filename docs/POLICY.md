@@ -45,6 +45,7 @@ sandbox:                            # optional: what the host sandboxes may read
   env_allow: []                     # optional, your own policy only: variables `openmoat run` passes on under `require.run` (§9.3)
   package_min_release_age_days: 7   # optional: `openmoat run` keeps npm and uv off versions newer than this; 0 is off (§9.1)
   project_top: protected            # optional, your own policy only: `writable` opens the project's top without bubblewrap on Linux (§9.4)
+  project_hook_off: refuse          # optional, your own policy only: `start` lets `openmoat run` start an agent whose project turns its hook off (§9.5)
 
 secrets:    [ <secret>, … ]         # values OpenMoat keeps from the agent (§2.1)
 
@@ -1914,6 +1915,35 @@ the agent's own tool calls. The setting changes nothing in the Isolated tier, in
 Lightweight tier with a network namespace, or on macOS, and `require.run: full-boundary`
 still refuses to start without the namespace. Only your own policy can set it: a
 repository policy or a pack has no `sandbox:` section.
+
+### 9.5 A project that turns the agent's hook off (`sandbox.project_hook_off`)
+
+Several agents load settings from the project when a session starts that can turn
+OpenMoat's hook off (a `disableAllHooks` key, a plugin entry that removes OpenMoat's;
+each agent's spec names them, ADR-098). A cloned repository can carry one, and no call of
+that session would reach OpenMoat. Before it starts an agent whose hook OpenMoat
+installed, `openmoat run` reads those files in the working directory, each folder above
+it up to the project root, and the root, and when one turns the hook off it does not
+start the agent: it names the file and what in it does it, and records the refusal
+(`run-project-hook-off-refused`). An agent with its own option that keeps hooks on for
+the session gets it on every run, before your arguments (Claude Code's `--settings
+'{"disableAllHooks":false}'`: it may reload a project's settings mid-session), unless you
+pass your own `--settings` or your own settings turn its hooks off, which the run says
+and records. For another agent the run starts anyway when OpenMoat's hook sits in its
+managed hook file and its documentation says a project cannot turn that off (`openmoat
+init --managed`), or when your own policy says:
+
+```yaml
+sandbox:
+  project_hook_off: start   # default: refuse
+```
+
+With `start`, the agent starts without OpenMoat's hook: only `openmoat run`'s sandbox
+holds that session. The key counts only while the policy lock matches the policy. `openmoat run` warns before the agent starts, writes
+`run-project-hook-off` to the audit log on every such run (`run-project-hook-off-overridden`
+when the agent's option kept the hook on), and `openmoat policy check` warns while the
+key is set. Only your own policy can set it: a repository policy or a pack has no
+`sandbox:` section.
 
 ## 10. Repository policy
 
