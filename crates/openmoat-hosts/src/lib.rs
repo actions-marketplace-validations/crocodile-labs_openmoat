@@ -461,6 +461,11 @@ pub struct HookRequest {
     /// set, a host whose hooks have no "no decision" may answer a `defer` as
     /// the host would without a hook.
     pub sandboxed: bool,
+    /// Whether the host runs this call in a mode in which a call the hook
+    /// defers runs with no person asked: a permission mode the payload names
+    /// ([`Reviews::unattended_modes`]), a run without a screen, or what the
+    /// guard finds ([`Reviews::unseen`]). Read by `unattended: review` (ADR-102).
+    pub unattended: bool,
     /// Which hook fired.
     pub event: HookEvent,
 }
@@ -561,7 +566,7 @@ mod tests {
             error.to_string(),
             "unknown host `nope`; supported: claude-code, codex, cursor, openclaw, \
              copilot-cli, pi, gemini-cli, opencode, hermes, cline, goose, antigravity-cli, \
-             qwen-code"
+             qwen-code, crush"
         );
     }
 }

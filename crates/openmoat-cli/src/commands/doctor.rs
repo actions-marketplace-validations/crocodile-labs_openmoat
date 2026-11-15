@@ -181,9 +181,33 @@ pub fn run(args: &DoctorArgs) -> Result<Code> {
         let line = super::run::withheld_line(&names, boundary.is_some());
         report.note_at(&line, Place::OpenMoat);
     }
-    match Store::open_read_only(&home.audit_path()).and_then(|store| store.verify_chain()) {
+    match home
+        .open_audit()
+        .and_then(|store| Ok(store.verify_chain()?))
+    {
         Ok(chain) => audit_line(&mut report, &chain),
-        Err(e) => report.line(Area::Audit, false, format!("audit log        {e}")),
+        Err(e) => report.line(Area::Audit, false, format!("audit log        {e:#}")),
+    }
+    // A key that is there but cannot be used: every write is refused, so say
+    // why (ADR-101). A mode others may read is `key_modes`' row.
+    if let Err(e) = crate::audit_key::read(&home)
+        && crate::key_file::problem(&crate::audit_key::path(&home)).is_none()
+    {
+        report.line(Area::Audit, false, format!("audit key        {e:#}"));
+    }
+    // No key over a log with events is a problem even where the database's
+    // own mark says nothing is keyed: whoever can write the database can move
+    // that mark.
+    if crate::audit_key::missing_over_events(&home) {
+        report.line(
+            Area::Audit,
+            false,
+            format!(
+                "audit key        none at {}, while the audit log holds events: nothing more is \
+                 recorded. Put the key back, or move the log aside and run `openmoat init`",
+                crate::audit_key::path(&home).display()
+            ),
+        );
     }
     if let Some(last) = crate::anchor::Last::load(&home) {
         let text = format!(
@@ -503,6 +527,28 @@ fn audit_line(report: &mut Report, chain: &ChainReport) {
             &format!(
                 "audit log        {} events written before the hash chain existed are not covered",
                 chain.unchained
+            ),
+            Place::OpenMoat,
+        );
+    }
+    // Events before the audit key (ADR-101) verify by their hashes only, which
+    // whoever can write the file can recompute.
+    let before_key = chain
+        .events
+        .saturating_sub(chain.unchained)
+        .saturating_sub(chain.keyed);
+    if chain.keyed_after.is_some() {
+        let older = if before_key > 0 {
+            format!(
+                "; {before_key} written before the key existed are checked by their hashes only"
+            )
+        } else {
+            String::new()
+        };
+        report.note_at(
+            &format!(
+                "audit log        {} events carry the audit key's MAC{older}",
+                chain.keyed
             ),
             Place::OpenMoat,
         );

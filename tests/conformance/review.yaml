@@ -696,15 +696,16 @@
   expect: { verdict: defer, rules: [default] }
 
 # The neighbours of the #350 allows: what still needs review
-# npm exec downloads a package it cannot find, like npx
+# npm exec downloads a package it cannot find, like npx; since ADR-102 a name not
+# on the popular list needs review (`tsc` is not the TypeScript package)
 - id: review-npm-exec-like-npx
   threat: T5
   action: { shell: "npm exec tsc -- --noEmit" }
-  expect: { verdict: defer, rules: [default] }
+  expect: { verdict: review, rules: [package-run-unknown] }
 - id: review-npm-x-like-npx
   threat: T5
   action: { shell: "npm x cowsay" }
-  expect: { verdict: defer, rules: [default] }
+  expect: { verdict: review, rules: [package-run-unknown] }
 # a venv outside the project, emptied, upgraded from the network or inside .git
 - id: review-venv-outside-project
   threat: T4
@@ -1417,6 +1418,18 @@
 - id: review-write-github-workflow
   threat: T9
   action: { fs_write: "/p/.github/workflows/ci.yml" }
+  expect: { verdict: review, rules: [runs-later] }
+# Crush runs a project's `.crushrc` as Bash when it starts, with no prompt, and
+# loads the hooks of its `crush.json`
+- id: review-plant-crush-project-crushrc
+  threat: T9
+  context: { cwd: /p, project: /p }
+  action: { fs_write: "/p/.crushrc" }
+  expect: { verdict: review, rules: [runs-later] }
+- id: review-plant-crush-project-config
+  threat: T9
+  context: { cwd: /p, project: /p }
+  action: { fs_write: "/p/crush.json" }
   expect: { verdict: review, rules: [runs-later] }
 # a browser's tab list taints no session: the workflow needs review for itself
 # alone, as in a clean session (the unit test checks no `session-taint` is added)
@@ -2894,3 +2907,73 @@
   threat: T9
   action: { fs_write: "~/.cache/opencode/node_modules/helper-plugin/index.js" }
   expect: { verdict: review, rules: [runs-later] }
+# T5 a package fetched and run at once (ADR-102): a near miss of a popular name
+# is `package-near-miss`, any other name not on the popular list
+# `package-run-unknown`, pinned to a version or not
+- id: review-npx-unknown-package
+  threat: T5
+  action: { shell: "npx -y create-helper-kit@1.0.0 my-app" }
+  expect: { verdict: review, rules: [package-run-unknown] }
+- id: review-npx-near-miss-package
+  threat: T5
+  action: { shell: "npx lodahs" }
+  expect: { verdict: review, rules: [package-near-miss] }
+- id: review-npx-package-option
+  threat: T5
+  action: { shell: "npx --package=helper-kit-cli helper" }
+  expect: { verdict: review, rules: [package-run-unknown] }
+- id: review-bunx-unknown-package
+  threat: T5
+  action: { shell: "bunx helper-kit-cli init" }
+  expect: { verdict: review, rules: [package-run-unknown] }
+- id: review-npm-exec-unknown-package
+  threat: T5
+  action: { shell: "npm exec --yes -- helper-kit-cli init" }
+  expect: { verdict: review, rules: [package-run-unknown] }
+- id: review-pnpm-dlx-unknown-package
+  threat: T5
+  action: { shell: "pnpm dlx helper-kit-cli" }
+  expect: { verdict: review, rules: [package-run-unknown] }
+- id: review-yarn-dlx-unknown-package
+  threat: T5
+  action: { shell: "yarn dlx helper-kit-cli" }
+  expect: { verdict: review, rules: [package-run-unknown] }
+- id: review-bun-x-unknown-package
+  threat: T5
+  action: { shell: "bun x helper-kit-cli" }
+  expect: { verdict: review, rules: [package-run-unknown] }
+- id: review-uvx-unknown-package
+  threat: T5
+  action: { shell: "uvx helper-kit-cli@0.3.1 run" }
+  expect: { verdict: review, rules: [package-run-unknown] }
+- id: review-uvx-near-miss-package
+  threat: T5
+  action: { shell: "uvx reqeusts" }
+  expect: { verdict: review, rules: [package-near-miss] }
+- id: review-uvx-from-unknown-package
+  threat: T5
+  action: { shell: "uvx --from helper-kit-cli helper" }
+  expect: { verdict: review, rules: [package-run-unknown] }
+- id: review-uvx-with-unknown-package
+  threat: T5
+  action: { shell: "uvx --with helper-kit-plugin ruff check" }
+  expect: { verdict: review, rules: [package-run-unknown] }
+- id: review-uv-tool-run-unknown-package
+  threat: T5
+  action: { shell: "uv tool run helper-kit-cli" }
+  expect: { verdict: review, rules: [package-run-unknown] }
+- id: review-pipx-run-unknown-package
+  threat: T5
+  action: { shell: "pipx run helper-kit-cli" }
+  expect: { verdict: review, rules: [package-run-unknown] }
+- id: review-pipx-run-spec-unknown-package
+  threat: T5
+  action: { shell: "pipx run --spec helper-kit-cli==1.2 helper" }
+  expect: { verdict: review, rules: [package-run-unknown] }
+# Without the project's files a program name that is not a package's (`tsc`,
+# `ng`) is a run of an unknown package; `openmoat guard` looks for the program
+# in the project's `node_modules/.bin` first (ADR-102, engine unit tests)
+- id: review-npx-program-without-the-project
+  threat: T5
+  action: { shell: "npx tsc --noEmit" }
+  expect: { verdict: review, rules: [package-run-unknown] }

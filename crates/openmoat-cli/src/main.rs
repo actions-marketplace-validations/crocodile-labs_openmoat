@@ -6,6 +6,7 @@
 
 mod anchor;
 mod approvals;
+mod audit_key;
 mod cli;
 mod commands;
 mod compliance;
@@ -29,6 +30,7 @@ mod os_version;
 mod packs;
 mod plugin_record;
 mod project;
+mod project_packages;
 mod project_settings;
 mod protection;
 mod provenance;

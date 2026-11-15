@@ -33,6 +33,21 @@ pub struct Reviews {
     /// The values of the payload's permission mode in which no question
     /// reaches a person: a call in one is [`HookEvent::PreToolUseNoPrompt`].
     pub prompt_free_modes: &'static [&'static str],
+    /// The values of the payload's permission mode in which a call the hook
+    /// defers runs with no person asked (ADR-102): the call is
+    /// [`HookRequest::unattended`](crate::HookRequest::unattended). A mode
+    /// that refuses what it would ask about (Claude Code's `dontAsk`) is not
+    /// one: there a deferred call does not run.
+    pub unattended_modes: &'static [&'static str],
+    /// The values of the payload's permission mode in which the host runs a
+    /// deferred file edit, and a shell command whose program is one of
+    /// [`Self::edit_mode_commands`], unasked, and asks before anything else
+    /// (Claude Code's `acceptEdits`): such a call is
+    /// [`HookRequest::unattended`](crate::HookRequest::unattended), and its
+    /// review is still put to the person.
+    pub edit_modes: &'static [&'static str],
+    /// The programs [`Self::edit_modes`] run unasked.
+    pub edit_mode_commands: &'static [&'static str],
     /// How to tell, outside the payload, that the host would approve a
     /// `review` without a person seeing it; a call then is
     /// [`HookEvent::PreToolUseNoPrompt`]. `None` for a host whose payload says
@@ -80,6 +95,9 @@ impl Reviews {
         ungoverned: Verdict::Defer,
         allow_last_hint: false,
         prompt_free_modes: &[],
+        unattended_modes: &[],
+        edit_modes: &[],
+        edit_mode_commands: &[],
         unseen: None,
     };
 }

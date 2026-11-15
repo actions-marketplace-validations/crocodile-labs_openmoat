@@ -223,7 +223,7 @@ fn relaxed_keys_change_nothing_that_runs_or_decides() {
 /// such key, and GitHub Copilot CLI blocks a failed `preToolUse` hook on its own.
 #[test]
 fn every_hook_outlasts_the_guard_and_blocks_where_the_host_can() {
-    let expected: [(Host, &str, &[&str]); 13] = [
+    let expected: [(Host, &str, &[&str]); 14] = [
         (Host::ClaudeCode, "Entries(Settings)", &["PreToolUse"]),
         (Host::Codex, "Entries(Codex)", &[]),
         (Host::Cursor, "Entries(Cursor)", &[]),
@@ -237,6 +237,7 @@ fn every_hook_outlasts_the_guard_and_blocks_where_the_host_can() {
         (Host::Goose, "Entries(Goose)", &[]),
         (Host::AntigravityCli, "Entries(Named)", &[]),
         (Host::QwenCode, "Entries(Qwen)", &[]),
+        (Host::Crush, "Entries(Crush)", &[]),
     ];
     assert_eq!(expected.len(), Host::ALL.len());
     for (host, layout, blocking) in expected {
@@ -397,8 +398,10 @@ fn every_verdict_reaches_the_host_as_it_must() {
     // whose PowerShell commands OpenMoat leaves to Cline), goose 4 (no read or fetch
     // tool; 3 on Windows, whose `cmd` OpenMoat leaves to goose), Antigravity CLI 6
     // (5 on Windows, whose shell OpenMoat does not classify), Qwen Code 6 (5 on
-    // Windows, whose PowerShell commands OpenMoat leaves to Qwen Code)
-    assert_eq!(checked, 71 - 6 * usize::from(cfg!(windows)));
+    // Windows, whose PowerShell commands OpenMoat leaves to Qwen Code), Crush 5
+    // (no MCP call, whose `mcp_<server>_<tool>` name cannot be split back; 4 on
+    // Windows, whose shell OpenMoat leaves to Crush)
+    assert_eq!(checked, 76 - 7 * usize::from(cfg!(windows)));
 }
 
 /// ADR-025: `defer` writes nothing, so Claude Code, Codex and the Continue CLI
@@ -416,5 +419,33 @@ fn defer_is_no_decision_for_every_pre_tool_use_host() {
             "",
             "{host:?}"
         );
+    }
+}
+
+/// A host that can report a mode in which nobody is asked (a permission mode
+/// the payload names, or what the guard reads, ADR-102) says why its review
+/// becomes a deny there: `unattended: review` answers such a call with no prompt.
+#[test]
+fn every_unattended_mode_has_a_no_prompt_reason() {
+    for host in Host::ALL {
+        let reviews = &host.spec().reviews;
+        if !reviews.unattended_modes.is_empty() || reviews.unseen.is_some() {
+            assert!(
+                reviews.on_no_prompt.is_some(),
+                "{host}: an unattended mode with no `on_no_prompt` reason"
+            );
+        }
+        for mode in reviews.unattended_modes {
+            assert!(
+                !mode.is_empty()
+                    && reviews
+                        .unattended_modes
+                        .iter()
+                        .filter(|m| *m == mode)
+                        .count()
+                        == 1,
+                "{host}: `{mode}` listed empty or twice"
+            );
+        }
     }
 }

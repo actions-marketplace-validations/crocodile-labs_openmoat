@@ -78,6 +78,21 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         // `bypassPermissions` skips its prompts and `dontAsk` denies whatever
         // would prompt.
         prompt_free_modes: &["bypassPermissions", "dontAsk"],
+        // The payload's `permission_mode` (hooks reference, "Common input
+        // fields"; `defaultMode` in the settings reference): `bypassPermissions`
+        // runs every call unasked and `auto` lets a classifier approve calls in
+        // place of the person (`settings::PROMPTING_MODES`); `dontAsk` refuses
+        // what it would ask about, so a deferred call does not run there. In
+        // `auto` Claude Code still puts a hook's `ask` to the person (hooks
+        // reference), so a review there is a prompt, not a deny.
+        unattended_modes: &["bypassPermissions", "auto"],
+        // `acceptEdits` approves file edits, and the file commands `mkdir`,
+        // `touch`, `rm`, `rmdir`, `mv`, `cp` and `sed` in the working
+        // directory, unasked; everything else it asks about (permission
+        // modes in the settings reference). OpenMoat cannot tell the working
+        // directory's paths from others there, so it counts every such call.
+        edit_modes: &["acceptEdits"],
+        edit_mode_commands: &["mkdir", "touch", "rm", "rmdir", "mv", "cp", "sed"],
         ..Reviews::BASE
     },
     resume_hint: Some("`claude --continue` resumes this one"),

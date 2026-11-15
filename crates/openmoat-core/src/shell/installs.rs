@@ -11,7 +11,15 @@
 //! requirement files name no registry package, and an install from the
 //! lockfile or a requirements file (`npm install`, `pip install -r
 //! requirements.txt`) names none.
+//!
+//! A command that fetches a package and runs it at once (`npx x`, `uvx y`,
+//! `pipx run z`, `runs.rs`) gives the same near-miss atom, and for a name
+//! that is not on the popular list either `@package-run-unknown <ecosystem>
+//! <name>`, which the default policy's `package-run-unknown` group holds for
+//! review: the package's code runs now, and nothing says what it is. A popular
+//! name gives no atom, as an install's does not.
 
+mod runs;
 mod tools;
 
 use super::{ClassifyError, Sink};
@@ -22,24 +30,36 @@ use tools::Tool;
 /// The atom for an installed name that is a near miss of a popular package.
 pub(crate) const NEAR_MISS: &str = "@package-near-miss";
 
+/// The atom for a package a runner fetches and runs at once whose name is
+/// not on the popular list.
+pub(crate) const UNKNOWN_RUN: &str = "@package-run-unknown";
+
+/// The last word of an [`UNKNOWN_RUN`] atom whose name may be a program the
+/// project installed rather than a package to fetch.
+pub(crate) const MAY_BE_LOCAL: &str = "or-local-program";
+
 /// At most this many names of one command are checked.
 const MAX_NAMES: usize = 64;
 
-/// The near-miss atoms of `argv`, whose program's base name is `program`.
+/// The package atoms of `argv`, whose program's base name is `program`.
 pub(super) fn note(argv: &[String], program: &str, sink: &mut Sink) -> Result<(), ClassifyError> {
-    for argv in near_misses(argv, program) {
+    for argv in near_misses(argv, program)
+        .into_iter()
+        .chain(unknown_runs(argv, program))
+    {
         sink.push(AtomicAction::Shell { argv })?;
     }
     Ok(())
 }
 
-/// Each `@package-near-miss <ecosystem> <name> <popular>` atom `command`
-/// gives, as one line, wherever on the line the install is (`cd app && pip
-/// install …`, `sh -c '…'`): what `moat allow --always` adds to its rule so the
-/// install a person approved is not held for review again. Package names are not
-/// paths, so the directories the command runs in do not matter here.
+/// Each `@package-near-miss <ecosystem> <name> <popular>` and
+/// `@package-run-unknown <ecosystem> <name>` atom `command` gives, as one
+/// line, wherever on the line the install or run is (`cd app && pip install
+/// …`, `sh -c '…'`): what `moat allow --always` adds to its rule so the
+/// package a person approved is not held for review again. Package names are
+/// not paths, so the directories the command runs in do not matter here.
 #[must_use]
-pub fn near_miss_atoms(command: &str) -> Vec<String> {
+pub fn package_atoms(command: &str) -> Vec<String> {
     let cwd = [Some("/".to_owned())];
     let ctx = super::ShellContext {
         home: "/",
@@ -49,7 +69,9 @@ pub fn near_miss_atoms(command: &str) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     for atom in atoms {
         if let AtomicAction::Shell { argv } = atom
-            && argv.first().is_some_and(|tag| tag == NEAR_MISS)
+            && argv
+                .first()
+                .is_some_and(|tag| tag == NEAR_MISS || tag == UNKNOWN_RUN)
         {
             let line = argv.join(" ");
             if !lines.contains(&line) {
@@ -81,9 +103,48 @@ fn near_misses(argv: &[String], program: &str) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// The registry and the package names `argv` installs from it, if it is an
-/// install; the names may be none (`npm install` from the lockfile).
+/// The `@package-run-unknown <ecosystem> <name>` argv of each package `argv`
+/// fetches and runs at once whose name is neither popular nor a near miss of
+/// a popular one (that gives its near-miss atom). A word that may be a
+/// program the project installed (an npm runner's first word, with no
+/// version and no package option: `npx tsc`) ends in [`MAY_BE_LOCAL`], so
+/// the engine can ask whether the project has it (`engine/packages.rs`).
+fn unknown_runs(argv: &[String], program: &str) -> Vec<Vec<String>> {
+    let Some((ecosystem, words)) = runs::fetched(argv, program) else {
+        return Vec::new();
+    };
+    let mut atoms: Vec<Vec<String>> = Vec::new();
+    for fetched in words.into_iter().take(MAX_NAMES) {
+        let Some(name) = clean(ecosystem, fetched.word) else {
+            continue;
+        };
+        if packages::is_popular(ecosystem, &name) || packages::near_miss(ecosystem, &name).is_some()
+        {
+            continue;
+        }
+        let local = fetched.program_word && ecosystem == Ecosystem::Npm && fetched.word == name;
+        let mut atom = vec![UNKNOWN_RUN.to_owned(), ecosystem.id().to_owned(), name];
+        if local {
+            atom.push(MAY_BE_LOCAL.to_owned());
+        }
+        if !atoms.contains(&atom) {
+            atoms.push(atom);
+        }
+    }
+    atoms
+}
+
+/// The registry and the package names `argv` installs from it, or fetches
+/// and runs at once (`npx x`), if it does; the names may be none (`npm
+/// install` from the lockfile).
 pub(crate) fn requested(argv: &[String], program: &str) -> Option<(Ecosystem, Vec<String>)> {
+    if let Some((ecosystem, words)) = runs::fetched(argv, program) {
+        let names = words
+            .into_iter()
+            .filter_map(|w| clean(ecosystem, w.word))
+            .collect();
+        return Some((ecosystem, names));
+    }
     let (tool, operands) = tools::find(argv, program)?;
     let rest = tool
         .subcommands

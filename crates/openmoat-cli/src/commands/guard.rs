@@ -14,6 +14,7 @@ use openmoat_core::rule_id::{APPROVED_SESSION, KERNEL_ERROR, UNGOVERNED};
 use openmoat_core::{CompiledPolicy, Decision, Verdict};
 use openmoat_hosts::{HookEvent, HookRequest, Host};
 use record::Recorded;
+use relayed::relayed;
 
 use crate::approvals::{self, Grants};
 use crate::cli::GuardArgs;
@@ -37,8 +38,10 @@ mod placed;
 mod plugin;
 mod post_tool_use;
 mod record;
+mod relayed;
 mod required;
 mod session_start;
+mod unattended;
 mod unseen;
 
 /// How far into [`GUARD_BUDGET_S`] the session's taint may be folded, leaving
@@ -240,6 +243,10 @@ fn decide_and_respond(installed_for: Host, by_run: bool, event: &mut HookEvent) 
         Err(error) => (None, kernel_error(&error)),
     };
 
+    // In a mode that asks no person, `unattended: review` holds a defer (ADR-102).
+    if let Some(r) = &mut request {
+        unattended::apply(host, out.unattended, r, &mut decision);
+    }
     // Where the host would approve a `review` no person sees, it is a deny.
     if let Some(r) = &mut request
         && decision.verdict == Verdict::Review
@@ -299,59 +306,6 @@ fn decide_and_respond(installed_for: Host, by_run: bool, event: &mut HookEvent) 
     code
 }
 
-/// Under `moat run`: the call goes to the run's process outside the sandbox,
-/// and its answer is printed as it came. Whatever fails denies here, in the
-/// format the payload's hook expects; nothing is recorded from in here.
-fn relayed(installed_for: Host, endpoint: Result<guard_relay::Endpoint>, started: Instant) -> Code {
-    hangs::enter(Phase::Stdin);
-    let payload = match read_stdin(installed_for) {
-        Ok(payload) => payload,
-        Err(error) => {
-            return respond(installed_for, &HookEvent::default(), &kernel_error(&error));
-        }
-    };
-    let caller_set = entry::caller_set();
-    let host = installed_for.sender(&payload, caller_set);
-    let event = host.event_of_as(&payload, entry::event());
-    let budget = Duration::from_secs(GUARD_BUDGET_S).saturating_sub(started.elapsed());
-    hangs::enter(Phase::Relay);
-    let sent = (caller_set, entry::event());
-    match endpoint.and_then(|e| e.decide(installed_for, &payload, sent, budget)) {
-        Ok(reply) => {
-            hangs::enter(Phase::Answer);
-            relay_once(&reply)
-        }
-        Err(error) => {
-            let error = error.context("`openmoat run` did not decide this call");
-            respond(host, &event, &kernel_error(&error))
-        }
-    }
-}
-
-/// Print `reply` as the guard outside the sandbox wrote it, unless the
-/// budget's deny came first.
-fn relay_once(reply: &guard_relay::Reply) -> Code {
-    let mut responded = RESPONDED.lock().unwrap_or_else(PoisonError::into_inner);
-    if *responded {
-        return Code::Deny;
-    }
-    *responded = true;
-    let mut stdout = io::stdout().lock();
-    let written = stdout
-        .write_all(&reply.stdout)
-        .and_then(|()| stdout.flush());
-    let _ = io::stderr().lock().write_all(&reply.stderr);
-    if let Err(error) = written {
-        eprintln!("moat: could not write the hook response: {error}");
-        return Code::Deny;
-    }
-    if reply.code == 0 {
-        Code::Ok
-    } else {
-        Code::Deny
-    }
-}
-
 /// What deciding a call leaves for [`record::record()`], besides the decision.
 #[derive(Default)]
 struct Evaluated {
@@ -371,6 +325,8 @@ struct Evaluated {
     /// The titles the person's policy gives the decision's rules, for the
     /// block message (ADR-059).
     titles: notice::Titles,
+    /// The person's policy's `unattended:` (ADR-102), set once it is loaded.
+    unattended: openmoat_core::Unattended,
 }
 
 /// Decide one hook payload, filling `out` as it goes. `started` is when the
@@ -444,6 +400,7 @@ fn evaluate(
     let ctx = context::eval_context(&home, Some(&cwd), None)?;
     let policy = crate::repo::effective_policy(&home, &ctx)?;
     out.known = secrets::known(&policy.secrets, &ctx.home)?;
+    out.unattended = policy.unattended();
     // An agent below the level the policy requires gets no decision but this
     // deny, on every call (ADR-064); nothing to read when none is required.
     let call = required::Call {

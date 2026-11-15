@@ -86,13 +86,25 @@ fn version_7_log(path: &std::path::Path, schema: &str, rows: i64) -> Connection 
     conn
 }
 
+/// Insert a `review` row: without a MAC on version 7, which has no column for
+/// one; with one from version 12 on, whose trigger refuses a row without.
 fn insert_review(conn: &Connection) -> rusqlite::Result<usize> {
-    conn.execute(
-        "INSERT INTO events (ts_ms, host, session_id, tool, action, verdict, rules, reasons,
-                             latency_us)
-         VALUES (0, 'h', 's', 't', 'null', 'review', '[]', '[]', 1)",
-        [],
-    )
+    let keyed = conn.prepare("SELECT mac FROM events LIMIT 0").is_ok();
+    if keyed {
+        conn.execute(
+            "INSERT INTO events (ts_ms, host, session_id, tool, action, verdict, rules, reasons,
+                                 latency_us, mac)
+             VALUES (0, 'h', 's', 't', 'null', 'review', '[]', '[]', 1, 'm')",
+            [],
+        )
+    } else {
+        conn.execute(
+            "INSERT INTO events (ts_ms, host, session_id, tool, action, verdict, rules, reasons,
+                                 latency_us)
+             VALUES (0, 'h', 's', 't', 'null', 'review', '[]', '[]', 1)",
+            [],
+        )
+    }
 }
 
 #[test]
@@ -108,7 +120,7 @@ fn the_version_8_step_widens_in_place_and_copies_no_row() {
     assert!(insert_review(&other).is_err(), "version 7 refuses `review`");
 
     let started = Instant::now();
-    let store = Store::open_existing(&path).unwrap();
+    let store = upgraded(Store::open_existing(&path).unwrap());
     let took = started.elapsed();
 
     // The tables were not rebuilt: a rebuild puts them on new pages.
@@ -191,8 +203,8 @@ fn a_new_log_takes_every_verdict() {
             .conn
             .execute(
                 "INSERT INTO events (ts_ms, host, session_id, tool, action, verdict, rules,
-                                     reasons, latency_us)
-                 VALUES (0, 'h', 's', 't', 'null', ?1, '[]', '[]', 1)",
+                                     reasons, latency_us, mac)
+                 VALUES (0, 'h', 's', 't', 'null', ?1, '[]', '[]', 1, 'm')",
                 [verdict],
             )
             .unwrap();

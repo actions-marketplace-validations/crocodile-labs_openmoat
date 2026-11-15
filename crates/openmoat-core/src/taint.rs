@@ -266,8 +266,19 @@ const PROTECTED_WRITES: &[&str] = &[
     "**/QWEN.md",
     "**/.qwen",
     "**/.qwen/**",
+    // Crush: a project's configuration files, which add hooks and MCP servers, and
+    // its `crushrc` scripts; and its global configuration and data file, which
+    // `kernel-self` denies writing
+    "**/.config/crush",
+    "**/.config/crush/**",
+    "**/.local/share/crush/crush.json",
+    "**/crush.json",
+    "**/.crush.json",
+    "**/crushrc",
+    "**/.crushrc",
+    "**/.crush/**",
     // Agent Skills, loaded by Codex, Cursor, GitHub Copilot CLI, pi, Gemini CLI,
-    // OpenCode, goose, Antigravity CLI:
+    // OpenCode, goose, Antigravity CLI, Crush:
     // the shared `.agents/skills` folder and the folder above it
     "**/.agents",
     "**/.agents/skills",

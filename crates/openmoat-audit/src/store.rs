@@ -12,7 +12,7 @@ use rusqlite::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::KnownSecrets;
+use crate::{ChainKey, KnownSecrets};
 
 mod chain;
 mod export;
@@ -28,9 +28,13 @@ mod seen;
 mod session_cache;
 mod session_writes;
 
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) use chain::rehash_from;
 pub use chain::{BreakKind, ChainBreak, ChainHead, ChainReport, GENESIS};
 pub use export::{ExportFilter, ExportFormat, ExportedEvent};
-pub use export_verify::{AnchorCheck, ExportBreak, ExportReport, verify_export};
+pub use export_verify::{
+    AnchorCheck, ExportBreak, ExportReport, verify_export, verify_export_keyed,
+};
 pub use injected_inputs::{MAX_PER_SESSION as MAX_INJECTED_PER_SESSION, NewInjected};
 pub use mcp_flow::{MAX_AGE_MS as MCP_FLOW_MAX_AGE_MS, MAX_SESSION_ROWS as MCP_FLOW_SESSION_ROWS};
 pub use mcp_tickets::{MAX_AGE_MS as MCP_TICKET_MAX_AGE_MS, NewTicket, Ticket};
@@ -80,6 +84,39 @@ pub enum StoreError {
         id: EventId,
         /// What does not decode.
         reason: String,
+    },
+    /// An event was to be recorded on a handle without the audit key
+    /// (ADR-101). Nothing is written: an event without its MAC would read as
+    /// rewritten, so recording it unkeyed is refused, never done quietly.
+    #[error("the audit key was not given, so no event is recorded without its MAC (ADR-101)")]
+    KeyMissing,
+    /// The audit key file does not parse ([`ChainKey::parse`]); the reason
+    /// never quotes the file.
+    #[error("the audit key file is not valid: {0}")]
+    KeyInvalid(String),
+    /// The log ends before the event the key says keyed events start after:
+    /// events were deleted since the key was made.
+    #[error(
+        "the audit log ends at event {newest}, but its key was made when it reached event {after}: \
+         events were deleted. Keep the file as evidence: move it aside and run `openmoat init` \
+         to start a new log"
+    )]
+    KeyAhead {
+        /// The newest event in the log.
+        newest: EventId,
+        /// Where the key says keyed events start after.
+        after: EventId,
+    },
+    /// Event `after` the key starts from is no longer the one it was made
+    /// after: the events before the key were rewritten.
+    #[error(
+        "event {after} of the audit log no longer has the hash it had when the audit key was \
+         made: the events before the key were rewritten. Keep the file as evidence: move it \
+         aside and run `openmoat init` to start a new log"
+    )]
+    KeyStartChanged {
+        /// Where the key says keyed events start after.
+        after: EventId,
     },
 }
 
@@ -225,6 +262,12 @@ pub struct Store {
     /// Every event this handle records was decided for a package of the
     /// agent's own plugin channel ([`Store::from_package`]).
     from_package: bool,
+    /// The audit key (ADR-101): what this handle MACs the events it records
+    /// with, and checks the MACs with in [`Store::verify_chain`].
+    /// Boxed, so a handle stays the size it was without one.
+    key: Option<Box<ChainKey>>,
+    /// This handle upgraded the database from a version below 12 itself.
+    upgraded_to_keyed: bool,
 }
 
 impl Store {
@@ -268,25 +311,95 @@ impl Store {
             version: found,
             secrets: KnownSecrets::default(),
             from_package: false,
+            key: None,
+            upgraded_to_keyed: false,
         })
     }
 
-    /// A throwaway database for tests.
+    /// A throwaway database for tests, keyed with a fixed key that protects
+    /// nothing: the database is gone with the handle.
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        Self::initialise(Connection::open_in_memory()?)
+        Ok(Self::initialise(Connection::open_in_memory()?)?.with_chain_key(ChainKey::throwaway()))
     }
 
     fn initialise(conn: Connection) -> Result<Self, StoreError> {
         conn.busy_timeout(std::time::Duration::from_millis(BUSY_TIMEOUT_MS))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        schema::migrate(&conn)?;
+        let added_mac = schema::migrate(&conn)?;
         Ok(Self {
             conn,
             version: schema::SCHEMA_VERSION,
             secrets: KnownSecrets::default(),
             from_package: false,
+            key: None,
+            upgraded_to_keyed: added_mac,
         })
+    }
+
+    /// This handle, recording with the audit key and checking its MACs
+    /// (ADR-101). Without one, [`Store::record`] refuses and
+    /// [`Store::verify_chain`] stops at the first keyed event.
+    #[must_use]
+    pub fn with_chain_key(self, key: ChainKey) -> Self {
+        Self {
+            key: Some(Box::new(key)),
+            ..self
+        }
+    }
+
+    /// Whether this handle's own open upgraded the database from a version
+    /// before keyed events (below 12), adding the MAC column: the one moment a
+    /// writer that is not a person's `openmoat init` may make the audit key for
+    /// a log with events. A version set back by hand keeps the column, so it
+    /// does not count.
+    #[must_use]
+    pub fn upgraded_to_keyed(&self) -> bool {
+        self.upgraded_to_keyed
+    }
+
+    /// Where a key made now starts: the newest event and its chain hash, or
+    /// `(EventId(0), None)` for an empty log.
+    pub fn key_start(&self) -> Result<(EventId, Option<String>), StoreError> {
+        let newest: Option<(i64, Option<String>)> = self
+            .conn
+            .query_row(
+                &format!(
+                    "SELECT id, {} FROM events ORDER BY id DESC LIMIT 1",
+                    if self.chained() { "hash" } else { "NULL" }
+                ),
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        Ok(newest.map_or((EventId(0), None), |(id, hash)| (EventId(id), hash)))
+    }
+
+    /// Whether the log holds events written after it was upgraded to keyed
+    /// events: past the mark version 12 left, or past 0 where the mark is
+    /// gone. Such events need the audit key that keyed them, so a writer that
+    /// finds no key must not make a new one. `false` below version 12.
+    pub fn has_keyed_events(&self) -> Result<bool, StoreError> {
+        if !self.keyed() {
+            return Ok(false);
+        }
+        Ok(self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM events WHERE id > COALESCE(
+                 (SELECT value FROM meta WHERE key = 'unkeyed_last_id'), 0))",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Whether this database keys its events: schema version 12 or later.
+    #[must_use]
+    pub fn keys_events(&self) -> bool {
+        self.keyed()
+    }
+
+    /// The schema has the audit key's MAC column (version 12).
+    fn keyed(&self) -> bool {
+        self.version >= schema::KEYED_VERSION
     }
 
     /// The schema has the chain columns (version 2).
@@ -368,12 +481,26 @@ impl Store {
         let cwd = event.cwd.map(|c| secrets.redact(c));
         let rules = serde_json::to_string(&event.decision.rules)?;
         let reasons = serde_json::to_string(&reasons)?;
+        // Every event from version 12 on carries the key's MAC: without the
+        // key nothing is recorded (ADR-101).
+        let key = self.key.as_ref().ok_or(StoreError::KeyMissing)?;
         // Reading the newest hash and appending must be one step, or two
         // concurrent `guard` processes would link to the same event and fork
         // the chain. `BEGIN IMMEDIATE` takes the write lock up front (waiting up
         // to the busy timeout); dropping the transaction on error rolls back.
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let (id, prev_hash) = chain::next_link(&tx)?;
+        // An event at or before where the key says keyed events start would
+        // pass as older than the key: the log lost events since it was made.
+        if id <= key.after().0 {
+            return Err(StoreError::KeyAhead {
+                newest: EventId(id - 1),
+                after: key.after(),
+            });
+        }
+        // Nor on top of events before the key that were rewritten (or dropped
+        // with every keyed one after them): the start must be as it was.
+        chain::check_key_start(&tx, key)?;
         let fields = chain::Fields {
             id,
             ts_ms,
@@ -389,9 +516,10 @@ impl Store {
             latency_us: i64::try_from(event.latency_us).unwrap_or(i64::MAX),
             prev_hash: &prev_hash,
         };
+        let hash = fields.hash();
         tx.execute(
-            "INSERT INTO events (id, ts_ms, host, session_id, call_id, cwd, tool, action, verdict, rules, reasons, latency_us, prev_hash, hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            "INSERT INTO events (id, ts_ms, host, session_id, call_id, cwd, tool, action, verdict, rules, reasons, latency_us, prev_hash, hash, mac)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 fields.id,
                 fields.ts_ms,
@@ -406,7 +534,8 @@ impl Store {
                 fields.reasons,
                 fields.latency_us,
                 fields.prev_hash,
-                fields.hash(),
+                hash,
+                key.mac(&hash),
             ],
         )?;
         if self.from_package {
