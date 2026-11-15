@@ -179,6 +179,7 @@ sets up each:
 | Cline CLI | OpenMoat's `PreToolUse` and `PostToolUse` hook scripts in `~/.cline/hooks` | hook only | `cline` |
 | goose | `PreToolUse` hook in OpenMoat's plugin, `~/.agents/plugins/openmoat/hooks/hooks.json`, with `on_failure: block` | hook only | `goose` |
 | Antigravity CLI | `PreToolUse` hook in `~/.gemini/config/hooks.json` | hook only | `antigravity-cli` |
+| Qwen Code | `PreToolUse` hook in `settings.json` (preview) | hook only | `qwen-code` |
 | Continue CLI | `cn` reads the Claude Code hook, but the released `cn` runs no hooks, and [Continue's repository](https://github.com/continuedev/continue) is no longer maintained | not checked yet; use `openmoat run` | none |
 <!-- /generated -->
 
@@ -316,6 +317,7 @@ Every command, and what to do when OpenMoat gets in your way: [docs/USAGE.md](do
   parser, policy parsing, repository-policy merging, host payloads, the proxy, the MCP
   gateway's framing and the pull request check's diff parser; they are run by hand, not
   in CI ([CONTRIBUTING](CONTRIBUTING.md)).
+- **What it costs your work.** `openmoat audit stats` shows, from your own audit log, decision times and how often calls were held or denied per agent ([docs/DISTURBANCE.md](docs/DISTURBANCE.md)).
 
 ## How a call is decided
 
