@@ -100,6 +100,21 @@ Each agent's gaps and the reasons are in
   there; other agents' logins stay denied. An API-key login can go through the broker
   instead ([BROKER_LOGINS.md](BROKER_LOGINS.md)); an OAuth login cannot
   ([ADR-054](adr/ADR-054-agent-credentials-in-sandboxes.md)).
+- **On Linux, an agent's own sandbox can fail every command where user namespaces are
+  refused.** Claude Code's, Codex's and Cursor's sandboxes need to create user
+  namespaces as the user, and Claude Code's needs `bwrap` and `socat` on `PATH`
+  ([SANDBOX.md](SANDBOX.md#what-each-agents-sandbox-needs-on-linux)). Where Ubuntu's
+  AppArmor restriction, `user.max_user_namespaces=0`, Debian's
+  `kernel.unprivileged_userns_clone=0` or a container refuses them, Claude Code's
+  commands fail, Codex's sandboxed commands do not start and Cursor asks before each
+  command; the hook still decides each call. `openmoat doctor` and `openmoat status` say
+  so and name the fixes, which are the machine's: no policy setting leaves one agent's
+  sandbox off yet. They read settings and ask the system's `bwrap` for one namespace, so
+  they cannot see a machine that allows a namespace but not one inside another, as
+  Claude Code's seccomp step makes; GitHub's `ubuntu-latest` runner is such a machine
+  (#784). Cursor's desktop app has an AppArmor profile of its own, which the check does
+  not read, so with the restriction on and no `bwrap` installed it may warn for Cursor
+  where Cursor's sandbox starts.
 - **On Linux without bubblewrap, nothing can be created at the top of the project, and
   deeper denied paths stay open.** Landlock grants a folder with everything in it, so
   where `openmoat run` gets no network namespace (bubblewrap missing or blocked) it grants
@@ -284,9 +299,9 @@ neither does the hook. `openmoat status`, `openmoat doctor` and `openmoat watch`
 when an agent wrote sessions since its hook, settings or program last changed and no
 call of its reached OpenMoat ([USAGE.md](USAGE.md#does-the-agent-still-run-openmoats-hook),
 ADR-104). That warning has limits: it comes only after a session is ten minutes old; it
-needs the agent's session files, which OpenMoat does not know for Cline, goose, Hermes
-Agent, Antigravity CLI and Crush (a note there says no call came) nor for Cursor's
-editor; a session that used no tool looks the same as one whose calls went unchecked,
+needs the agent's session files, which OpenMoat does not know for goose, Hermes Agent,
+Antigravity CLI and Crush (a note there says no call came) nor for Cursor's editor or
+the Cline VS Code extension; a session that used no tool looks the same as one whose calls went unchecked,
 so the warning says "if they used tools"; sessions synced from another machine count
 here though their calls were checked there; and it compares file times with the audit
 log's on this machine, so a restored or wrongly dated file can raise it until the next
@@ -372,6 +387,14 @@ call.
   again. An agent that starts itself again from inside its sandbox finds the shim there
   and cannot start, since the sandbox hides OpenMoat's directory; outside a project
   `openmoat run` refuses to start (ADR-106).
+- **Other processes' environments are seen through `ps`, `pargs` and `/proc` only.**
+  `env-dump` denies `ps` with the BSD `e` modifier or macOS's `-E`, `pargs -e` and reads of
+  `/proc/<pid>/environ`. Not seen: FreeBSD's `ps -e`, which prints the environment there
+  but means every process on Linux and macOS and stays allowed; options the line does not
+  show (`ps $opts`, `ps $(cat f)`); a program or script that reads them through a system
+  call (`sysctl` `KERN_PROCARGS2` on macOS, `psutil`); other tools (`gdb -p`, `lldb`). Under
+  `openmoat run` the OS keeps the agent from reading other processes' environments
+  whatever the command; outside it, the hook's decision is the only check.
 
 - **DNS exfiltration is seen only in a name with a fixed domain.** A name a resolver or
   client looks up that is built at run time is decided as the domain it ends in

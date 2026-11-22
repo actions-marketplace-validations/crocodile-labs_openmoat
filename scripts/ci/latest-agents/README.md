@@ -81,7 +81,16 @@ unknown claim and a record without `hook` and without `why`.
   to be written from such a capture, not from the documentation. `check.py
   tool-failures` does fail, before the audit checks, when a payload belongs to any call
   but the `ls` meant to fail, and quotes its `error` (a sandbox that could not start the
-  shell prints `bwrap`, `socat` or `execvp` text there). A tool shell that never started
+  shell prints `bwrap`, `socat` or `execvp` text there). One error is a limit of the
+  runner, not a result (`ENV_LIMITS` in `check.py`): on `ubuntu-latest` Claude Code's
+  seccomp step cannot make a user namespace inside bubblewrap's (`apply-seccomp: write
+  /proc/self/setgroups (nested userns is capability-restricted; …)`, #784), so no Bash
+  call starts in its sandbox. Such a payload prints `skip  env-limit: …` and a warning
+  annotation instead of failing; `check.py env-limited` then makes the script skip, each
+  with its own `skip  env-limit` line, the tool-shell checks and the injected-input check,
+  which need a call to have run. The `SessionStart` row, the denied read (decided in
+  `PreToolUse`, before the sandbox) and the resumed session's checks still run, and a
+  failure with any other error still fails the step. A tool shell that never started
   is printed first too, so the first `FAIL` of the step names the cause, not the audit
   row it left missing. An audit check that fails lists each new row on its own line:
   tool, verdict, rules and command, each cut to 160 characters.
@@ -150,6 +159,33 @@ agents, whose event a plugin or script of OpenMoat's would have to send.
 `python3 -I scripts/ci/latest-agents/test_after_call.py` (run by hand) tests the
 redaction, the notice and each `NOT CAPTURED` reason; only a run of this job can show what
 an agent sends.
+
+## Session files
+
+`openmoat status` and `doctor` tell an agent that stopped running OpenMoat's hook from one
+that has not run since a change by the session files the agent wrote since (ADR-104; the
+places and their sources are in `docs/USAGE.md` "Does the agent still run OpenMoat's
+hook?"). A wrong place fails quiet there: the directory stays empty and no warning is
+ever given. So each record of a hook agent carries its spec's place (`sessions` in
+`agents.json`, written from `InstallSpec::liveness` with the rest; the directories under
+`dir`, `*` for every directory at a level, and the end of a session file's name), or why
+none is known (`sessions_unknown`).
+
+Right after the real agent's run, `check.py sessions <agent> <start file>` looks there,
+as `openmoat status` does (regular files, no links, written at or after the step
+started):
+
+- **`ok`**: the files found.
+- **`warn`** and a workflow `::warning`: the agent ran a session and wrote no file in the
+  place its spec names. Never a failure: read the agent's documentation or source and
+  correct the spec (and its source link).
+- **`skip`**: no place is known, or the record runs no session (`proves` has no `hook`).
+
+`check.py records` refuses a malformed place, and one without a `dir` to look under.
+`python3 -I scripts/ci/latest-agents/test_check.py` (run by hand) tests the matching;
+only a run of this job shows where an agent writes. Cursor's place cannot be checked
+here (every `cursor-agent` run needs an account), nor Qwen Code's (its record runs no
+session).
 
 ## When the hook fails
 

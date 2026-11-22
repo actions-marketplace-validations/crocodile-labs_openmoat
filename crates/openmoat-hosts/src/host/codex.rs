@@ -104,6 +104,10 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         // `[features] hooks = false` in `config.toml` turns hooks off. Each
         // session's rollout is `sessions/<yyyy>/<mm>/<dd>/rollout-<time>-<id>.jsonl`,
         // the `transcript_path` its hooks receive; `codex login` writes none.
+        // Source: `precompute_new_rollout_path` in
+        // https://github.com/openai/codex/blob/main/codex-rs/rollout/src/recorder.rs
+        // (`$CODEX_HOME/sessions/YYYY/MM/DD`); rollouts a week old may later be
+        // compressed to `.jsonl.zst`, long after they could count.
         liveness: Some(crate::Liveness {
             settings: &["config.toml"],
             sessions: crate::Sessions::Known(&[crate::Activity::new(&[
@@ -130,6 +134,17 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         windows_modes: Some(&windows_sandbox::Codex),
         // Codex's Linux sandbox does not refuse `TIOCSTI`.
         tiocsti_open_on_linux: true,
+        // The sandboxing docs (<https://developers.openai.com/codex/sandboxing>):
+        // Codex uses the first `bwrap` on `PATH`, else a bundled helper that
+        // "requires support for unprivileged user namespace creation", and
+        // warns at startup when it cannot create one. So `bwrap` is advised,
+        // not needed; the namespace is.
+        linux_needs: Some(crate::contract::LinuxSandboxNeeds {
+            programs: &[],
+            user_namespaces: true,
+            without: "Codex warns when it starts, and the commands it runs in its sandbox cannot \
+                      start",
+        }),
         // Its upstream proxy comes from the Codex process's own `HTTP_PROXY`,
         // and its hooks cannot set a command's environment (ADR-044).
         proxy_sessions: ProxySessions::NoCredential,

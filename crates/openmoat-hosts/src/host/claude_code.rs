@@ -125,7 +125,10 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         unpinned_keys: settings::UNPINNED_KEYS,
         // Each session's transcript is `projects/<the project's path, dashed>/
         // <session id>.jsonl`, the `transcript_path` its hooks receive;
-        // sign-in, `claude mcp` and `--help` write none.
+        // sign-in, `claude mcp` and `--help` write none. Source: "Application
+        // data" in https://code.claude.com/docs/en/claude-directory (under
+        // `CLAUDE_CONFIG_DIR` when it is set); a subagent's transcript, one
+        // level down, is not counted.
         liveness: Some(crate::Liveness {
             settings: &[],
             sessions: crate::Sessions::Known(&[crate::Activity::new(&[
@@ -155,6 +158,25 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         ),
         windows_modes: None,
         tiocsti_open_on_linux: false,
+        // The sandboxing docs, "Set up Linux and WSL2": the sandbox relies on
+        // `bubblewrap` and `socat`; Ubuntu's AppArmor restriction on user
+        // namespaces "keeps the sandbox from starting". With
+        // `failIfUnavailable` and `allowUnsandboxedCommands: false` nothing
+        // runs outside it.
+        linux_needs: Some(crate::contract::LinuxSandboxNeeds {
+            programs: &[
+                crate::contract::LinuxProgram {
+                    name: "bwrap",
+                    package: "bubblewrap",
+                },
+                crate::contract::LinuxProgram {
+                    name: "socat",
+                    package: "socat",
+                },
+            ],
+            user_namespaces: true,
+            without: "its Bash commands fail (`failIfUnavailable`, no unsandboxed commands)",
+        }),
         // The hooks reference, "Persist environment variables": each Bash
         // command runs the file's lines first (ADR-044).
         proxy_sessions: ProxySessions::EnvFile("CLAUDE_ENV_FILE"),
