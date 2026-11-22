@@ -99,7 +99,7 @@ pub struct Lock {
 
 /// Which hook files a re-pin covers, besides OpenMoat's own state files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HookPins {
+pub enum HookPins<'a> {
     /// `moat init`: the hook files already pinned plus every hook file installed
     /// under this shell's environment.
     Adopt,
@@ -108,12 +108,28 @@ pub enum HookPins {
     /// (its spec's `InstallSpec::dir_variable`: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
     /// …), which need not be this shell's, so a re-pin must not decide again which files those are.
     Keep,
+    /// `moat init --hooks-only`: the pins of a readable lock (hook files, MCP
+    /// servers, sandbox files) plus the hook files of these hosts. Without a
+    /// readable lock there is nothing to keep, so it pins what `Adopt` does:
+    /// pinning more is never weaker.
+    Selected(&'a [Host]),
+}
+
+impl<'a> HookPins<'a> {
+    /// `init`'s: `Adopt`, or with `--hooks-only` the `hosts` it writes.
+    pub fn for_init(hooks_only: bool, hosts: &'a [Host]) -> Self {
+        if hooks_only {
+            Self::Selected(hosts)
+        } else {
+            Self::Adopt
+        }
+    }
 }
 
 /// Pin everything the kernel trusts: policy, environment snapshot, approval
 /// files and the host hook files `hooks` selects. Used by `init`,
 /// `doctor --accept` and `allow`, which are the only human paths that may re-pin.
-pub fn repin(home: &Home, binary: &Path, hooks: HookPins) -> Result<Lock> {
+pub fn repin(home: &Home, binary: &Path, hooks: HookPins<'_>) -> Result<Lock> {
     repin_with(home, binary, hooks, &[], &[])
 }
 
@@ -122,7 +138,7 @@ pub fn repin(home: &Home, binary: &Path, hooks: HookPins) -> Result<Lock> {
 pub fn repin_with(
     home: &Home,
     binary: &Path,
-    hooks: HookPins,
+    hooks: HookPins<'_>,
     files: &[PathBuf],
     by_part: &[PathBuf],
 ) -> Result<Lock> {
@@ -133,9 +149,12 @@ pub fn repin_with(
     let had_lock = lock_path.exists();
     let mut mcp_servers = None;
     let mut owners = Vec::new();
+    // Whether the pins of a readable lock are carried over.
+    let mut kept_old = false;
     if had_lock {
         match (Lock::load(&lock_path), hooks) {
             (Ok(old), _) => {
+                kept_old = true;
                 // This shell's hook files, which an older lock's guessed
                 // owners are kept for (`owner.rs`); none when they cannot be
                 // told, and none needed when the lock records its owners.
@@ -163,16 +182,31 @@ pub fn repin_with(
                 );
             }
             // `init` is how a person recovers from an unreadable lock.
-            (Err(_), HookPins::Adopt) => {}
+            (Err(_), HookPins::Adopt | HookPins::Selected(_)) => {}
         }
     }
-    // Without a lock there is nothing to keep, so this environment's hooks it is.
-    if hooks == HookPins::Adopt || !had_lock {
+    // Without pins to keep (no lock, or one that cannot be read), every hook
+    // and sandbox file installed under this environment is pinned, whatever
+    // `hooks` says: `Selected` names the hooks `init` writes, and pinning
+    // only those would leave another agent's installed hook unchecked.
+    let adopt_all = match hooks {
+        HookPins::Adopt => true,
+        HookPins::Keep | HookPins::Selected(_) => !kept_old,
+    };
+    if adopt_all {
         let installed = installed_hooks(home, binary)?;
         owners.extend(installed.iter().map(|c| (c.settings_path.clone(), c.host)));
         paths.extend(installed.iter().flat_map(pinned_with));
         profiles.extend(crate::sandbox::install::part_pinned_settings(home)?);
         paths.extend(crate::sandbox::install::whole_pinned_settings(home)?);
+    } else if let HookPins::Selected(selected) = hooks {
+        for host in selected {
+            let config = HostConfig::for_host(home, *host)?;
+            if config.state(binary) == HookState::Installed {
+                owners.push((config.settings_path.clone(), config.host));
+                paths.extend(pinned_with(&config));
+            }
+        }
     }
     let mut lock = Lock::pin_owned(binary, &paths, &owners)?;
     // A state file that is missing (one a person accepted as deleted) is

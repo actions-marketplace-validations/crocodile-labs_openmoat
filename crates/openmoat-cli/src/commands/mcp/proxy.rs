@@ -15,7 +15,7 @@
 
 use std::io::{self, BufReader};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError, mpsc};
 
 use anyhow::{Context as _, Result};
 
@@ -26,6 +26,8 @@ use crate::home::Home;
 use crate::mcp::relay::{self, Relay, Save};
 use crate::mcp::startup::{self, Launch, Startup};
 use crate::mcp::tools::{self, ToolPins};
+
+mod process;
 
 pub fn run(args: &McpProxyArgs) -> Result<Code> {
     let home = Home::locate()?;
@@ -53,7 +55,7 @@ pub fn run(args: &McpProxyArgs) -> Result<Code> {
         crate::time::now_ms,
     ));
 
-    let mut child = command(args, &env)?
+    let mut child = process::own(&mut command(args, &env)?)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -66,7 +68,10 @@ pub fn run(args: &McpProxyArgs) -> Result<Code> {
     let host = Arc::new(Mutex::new(Some(io::stdout())));
 
     // The host's side ends when the agent closes stdin; closing the pipe then
-    // tells the server to exit, which ends the server's side below.
+    // tells the server to exit, which ends the server's side below. Each side
+    // reports to `supervise`, which bounds how long the server has.
+    let (done, finished) = mpsc::channel();
+    let host_done = done.clone();
     let (relay_in, server_in, host_in) = (
         Arc::clone(&relay),
         Arc::clone(&to_server),
@@ -74,6 +79,8 @@ pub fn run(args: &McpProxyArgs) -> Result<Code> {
     );
     std::thread::spawn(move || {
         let pumped = relay::pump_host(&relay_in, io::stdin().lock(), &*server_in, &*host_in, &note);
+        // Noted here: the server's side may have finished first, and then
+        // nothing waits for this side's result.
         if let Err(e) = pumped {
             note(&format!("{e:#}"));
         }
@@ -81,23 +88,19 @@ pub fn run(args: &McpProxyArgs) -> Result<Code> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
+        let _ = host_done.send(process::Pump::Host);
     });
-    let pumped = relay::pump_server(
-        &relay,
-        BufReader::new(from_server),
-        &*to_server,
-        &*host,
-        &note,
-    );
-    if pumped.is_err() {
-        // The server's output can no longer be relayed: a server still running
-        // would wait on a host that hears nothing more from it.
-        let _ = child.kill();
-    }
-    let status = child.wait().context("waiting for the MCP server")?;
-    // The host's thread, still reading stdin, ends with the process.
-    pumped?;
-    Ok(if status.success() {
+    std::thread::spawn(move || {
+        let pumped = relay::pump_server(
+            &relay,
+            BufReader::new(from_server),
+            &*to_server,
+            &*host,
+            &note,
+        );
+        let _ = done.send(process::Pump::Server(pumped));
+    });
+    Ok(if process::supervise(child, &finished, note)? {
         Code::Ok
     } else {
         Code::Failed

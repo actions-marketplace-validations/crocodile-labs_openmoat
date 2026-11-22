@@ -3,7 +3,9 @@
 //! What a person sees: a line per agent found with what it would get and the
 //! question (`ask.rs`), then the agents protected, the steps left and how to
 //! undo (`summary.rs`). Each file written, the backups and the lock are shown
-//! with `--verbose` (and in a dry run).
+//! with `--verbose` (and in a dry run). With `--format json` the text is
+//! replaced by one document (`json.rs`); `--hooks-only` writes and pins the
+//! hooks and nothing else.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -23,6 +25,7 @@ use crate::report::Style;
 use crate::sandbox::{self, Plan};
 
 mod ask;
+mod json;
 mod managed;
 pub(super) mod mcp;
 mod opt_in;
@@ -37,8 +40,10 @@ use refuse::{refuse_repin, refuse_writable_binary};
 
 pub fn run(args: &InitArgs) -> Result<Code> {
     let dry_run = args.dry_run;
+    let json = json::requested(args)?;
+    let hooks_only = args.hooks_only;
     // A dry run is a list of what would be written: every line of it shows.
-    let verbose = args.verbose || dry_run;
+    let verbose = (args.verbose || dry_run) && !json;
     if args.managed.managed {
         managed::refuse_unless_person()?;
     }
@@ -46,7 +51,12 @@ pub fn run(args: &InitArgs) -> Result<Code> {
     let binary = crate::install::hook_binary()?;
     refuse_writable_binary(&home, &binary)?;
     let snapshot = search_path(&home)?;
-    let mut out = Deferred::default();
+    // In JSON the document is the output: the text is not printed.
+    let mut out = if json {
+        Deferred::quiet()
+    } else {
+        Deferred::default()
+    };
     // Each file written, the backups and the lock: shown with `--verbose`.
     let mut detail = if verbose {
         Deferred::default()
@@ -100,16 +110,20 @@ pub fn run(args: &InitArgs) -> Result<Code> {
         out: &mut out,
         detail: &mut detail,
     };
+    let mut installed = Vec::with_capacity(hosts.len());
     for host in hosts.iter().copied() {
-        install(
+        installed.push(install(
             &home, &binary, host, unattended, dry_run, &mut steps, &mut files,
-        )?;
+        )?);
     }
-    steps.changed |= sandboxes(&home, &binary, &hosts, dry_run, &mut files)?;
+    if !hooks_only {
+        steps.changed |= sandboxes(&home, &binary, &hosts, dry_run, &mut files)?;
+    }
     if args.managed.managed {
         managed::write(&home, &binary, &hosts, dry_run, files.out)?;
     }
 
+    let mut lock = None;
     if dry_run {
         let detail = &mut *files.detail;
         writeln!(
@@ -117,28 +131,27 @@ pub fn run(args: &InitArgs) -> Result<Code> {
             "would lock             {}",
             home.lock_path().display()
         )?;
-        if args.mcp.mcp_proxy {
+        if !hooks_only && args.mcp.mcp_proxy {
             let sandbox = args.mcp.sandbox();
             super::mcp::wrap_servers(&home, &binary, &hosts, &[], sandbox, true, detail)?;
         }
         writeln!(files.out, "dry run: nothing was written")?;
     } else {
-        let lock = integrity::repin(&home, &binary, integrity::HookPins::Adopt)?;
+        let pins = integrity::HookPins::for_init(hooks_only, &hosts);
+        let written = integrity::repin(&home, &binary, pins)?;
         writeln!(
             files.detail,
             "✔ lock             {} ({} files pinned)",
             home.lock_path().display(),
-            lock.entries.len()
+            written.entries.len()
         )?;
-        let wrap = mcp::Wrap::of(args, unattended);
-        mcp::servers(&home, &binary, wrap, &hosts, unattended, &mut files)?;
+        if !hooks_only {
+            let wrap = mcp::Wrap::of(args, unattended);
+            mcp::servers(&home, &binary, wrap, &hosts, unattended, &mut files)?;
+        }
         // The opt-in choices (ADR-106), last, for a person only; the lock then
         // pins what they wrote.
-        if !unattended
-            && !args.yes
-            && crate::terminal::person_for("openmoat init")
-            && opt_in::ask(&home, &binary, &hosts, files.out)?
-        {
+        if opt_in::asked(args, unattended) && opt_in::ask(&home, &binary, &hosts, files.out)? {
             integrity::repin(&home, &binary, integrity::HookPins::Adopt)?;
         }
         let backups = if hosts.is_empty() {
@@ -147,9 +160,19 @@ pub fn run(args: &InitArgs) -> Result<Code> {
             backups(&home, &hosts, files.detail)?
         };
         summary::write(&home, &binary, &hosts, &steps, backups, verbose, files.out)?;
+        lock = Some(written);
     }
     detail.finish()?;
     out.finish()?;
+    if json {
+        let run = json::Outcome {
+            dry_run,
+            hooks_only,
+            steps: &steps,
+            lock: lock.as_ref(),
+        };
+        json::print(&home, &binary, installed, &run)?;
+    }
     Ok(Code::Ok)
 }
 
@@ -168,7 +191,7 @@ fn install(
     dry_run: bool,
     steps: &mut summary::Steps,
     files: &mut Writers<'_>,
-) -> Result<()> {
+) -> Result<json::InstalledHost> {
     let prefix = if dry_run { "would" } else { "✔" };
     let config = unattended::config(home, host, unattended)?;
     let replaced = match config.layout {
@@ -194,15 +217,17 @@ fn install(
         binary.display(),
         config.guard(binary).shell_args(host.id())
     )?;
-    if let Some(backup) = replaced.filter(|_| outcome != Outcome::Unchanged) {
+    let backup_path = replaced
+        .filter(|_| outcome != Outcome::Unchanged)
+        .map(|backup| backup.display().to_string());
+    if let Some(backup) = &backup_path {
         let verb = if dry_run { "would move" } else { "moved" };
         writeln!(
             files.out,
-            "! {:<16} {verb} your own hook {} to {}: {} runs one file there, so yours does \
+            "! {:<16} {verb} your own hook {} to {backup}: {} runs one file there, so yours does \
              not run while OpenMoat is installed; `openmoat uninstall` puts it back",
             host.display_name(),
             config.settings_path.display(),
-            backup.display(),
             host.display_name()
         )?;
     }
@@ -221,7 +246,13 @@ fn install(
         )?;
         steps.trust.push((host.display_name(), note));
     }
-    Ok(())
+    let done = json::Done {
+        outcome: verb,
+        changed: outcome != Outcome::Unchanged,
+        backup_path,
+        trust_note: trust,
+    };
+    Ok(json::InstalledHost::new(&config, done))
 }
 
 /// Which checks guard `init`'s re-pin of an existing lock.
