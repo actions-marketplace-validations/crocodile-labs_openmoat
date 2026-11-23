@@ -15,6 +15,7 @@ use thiserror::Error;
 use crate::{ChainKey, KnownSecrets};
 
 mod chain;
+mod checkpoint;
 mod export;
 mod export_verify;
 mod injected_inputs;
@@ -27,6 +28,7 @@ mod schema;
 mod seen;
 mod session_cache;
 mod session_writes;
+mod shown;
 
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use chain::rehash_from;
@@ -42,8 +44,10 @@ pub use provenance::{Exposure, FileProvenance, NewProvenance, ProvenanceKind};
 pub use rules::RuleSeen;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use schema::create_at;
+pub use seen::StartedSession;
 pub use session_cache::Cached;
 pub use session_writes::{RecordedWrite, SessionWrite, Written};
+pub use shown::{HeldForReview, RAN_AFTER_REVIEW_TOOL, SHOWN_PREFIX};
 
 const BUSY_TIMEOUT_MS: u64 = 2000;
 

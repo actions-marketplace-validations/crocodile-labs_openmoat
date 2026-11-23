@@ -16,16 +16,20 @@ use crate::realpath::PathResolver;
 use crate::verdict::{Decision, Verdict};
 
 mod aliases;
+mod arguments;
 mod atoms;
 mod contents;
 mod context;
 mod egress;
 mod injection;
 mod packages;
+mod sections;
 mod staging;
 mod taint;
+mod trifecta;
 
 use atoms::{checked_atoms, value_read_atoms};
+pub(crate) use sections::Section;
 pub use staging::{STAGING_ATOM, Staging};
 pub use taint::{Secret, Taint, UntrustedKind};
 
@@ -86,10 +90,12 @@ pub struct CompiledPolicy<'p> {
     inside: Vec<GlobPattern>,
     /// Every `requests:` entry, for the requests commands send (ADR-062).
     requests: crate::requests::RequestRules,
+    /// Paths `taint.private_paths` names, whose reads are private data (ADR-113).
+    private: Vec<GlobPattern>,
 }
 
 #[derive(Debug)]
-struct CompiledGroup {
+pub(crate) struct CompiledGroup {
     /// The group's id, as decisions name it.
     id: String,
     /// The group's `reason`, which prefixes each of its reasons.
@@ -103,6 +109,9 @@ struct CompiledGroup {
     /// proxy, and must not also match an IPv6 address whose text ends in
     /// `:8443`. Deny and review rules keep them: there they only refuse more.
     bare_hosts: Option<[Vec<GlobPattern>; Kind::ALL.len()]>,
+    /// The group's `when` conditions (ADR-113): such a group matches no atom
+    /// on its own, only a call in [`CompiledPolicy::with_arguments`].
+    when: Option<arguments::CompiledWhen>,
 }
 
 /// Whether `pattern` is a `net` or `fetch` pattern written `host:port`, not an
@@ -146,6 +155,7 @@ impl<'p> CompiledPolicy<'p> {
             folders: contents::ProtectedFolders::compile(&policy.deny, ctx),
             inside: staging::compile_inside(&policy, ctx)?,
             requests: crate::requests::RequestRules::for_hook(&policy.requests)?,
+            private: taint::compile_private(&policy, ctx)?,
             policy,
         })
     }
@@ -261,10 +271,18 @@ impl CompiledGroup {
             shell,
             globs,
             bare_hosts: allow.then_some(bare),
+            when: arguments::CompiledWhen::compile(&group.when, ctx)?,
         })
     }
 
+    /// Whether the group matches `action` on its own: never for a group with
+    /// `when` conditions, which only a whole call can satisfy.
     fn matches(&self, action: &AtomicAction) -> bool {
+        self.when.is_none() && self.matches_patterns(action)
+    }
+
+    /// Whether one of the group's patterns matches `action`.
+    fn matches_patterns(&self, action: &AtomicAction) -> bool {
         match (action, action.subject()) {
             (AtomicAction::Shell { argv } | AtomicAction::Pipeline { argv }, _) => {
                 any_match(&self.shell, argv.as_slice())
@@ -318,8 +336,8 @@ impl CompiledPolicy<'_> {
     }
 
     /// [`checked_atoms`] and the atoms of any token or placeholder they send
-    /// where it does not belong ([`egress`]), and of personal data they send
-    /// that a rule of this policy names (ADR-052).
+    /// where it does not belong ([`egress`]), and of personal data and
+    /// unprefixed credentials they send that a rule of this policy names (ADR-052).
     fn all_atoms(
         &self,
         action: &Action,
@@ -328,7 +346,7 @@ impl CompiledPolicy<'_> {
         let (mut atoms, unparsed) = checked_atoms(action, &self.ctx, self.opens_as(), paths);
         let egress = egress::atoms(action, &atoms, &self.policy.secrets)
             .into_iter()
-            .filter(|atom| !egress::is_personal(atom) || self.matched_rules(atom).is_some());
+            .filter(|atom| !egress::counts_where_named(atom) || self.matched_rules(atom).is_some());
         atoms.extend(egress);
         (atoms, unparsed)
     }

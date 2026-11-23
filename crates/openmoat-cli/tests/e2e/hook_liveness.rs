@@ -38,6 +38,29 @@ fn age(path: &Path, minutes: u64) {
         .unwrap();
 }
 
+/// [`age`] that keeps the file's birth time. A real file is never last
+/// written before it was made, so macOS moves the birth time back with an
+/// older modification time unless it is set too; Linux cannot set it and
+/// leaves it.
+fn age_keeping_birth(path: &Path, minutes: u64) {
+    let born = fs::metadata(path).and_then(|m| m.created()).ok();
+    let then = SystemTime::now() - Duration::from_secs(minutes * 60);
+    let times = fs::FileTimes::new().set_modified(then);
+    #[cfg(target_vendor = "apple")]
+    let times = match born {
+        Some(born) => std::os::darwin::fs::FileTimesExt::set_created(times, born),
+        None => times,
+    };
+    #[cfg(not(target_vendor = "apple"))]
+    let _ = born;
+    fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+        .set_times(times)
+        .unwrap();
+}
+
 /// Make every file `init` wrote that liveness reads for `host` (the hook file
 /// and the spec's settings files, such as Codex's `config.toml`) look written
 /// `minutes` ago, and the lock `minutes - 10` ago, as if `init` ran then and
@@ -184,4 +207,69 @@ fn an_unknown_session_place_is_a_note_in_doctor() {
             "{host}: {shown}"
         );
     }
+}
+
+/// The hook hosts whose session start reaches the guard (ADR-109), with
+/// where they write their sessions.
+fn started() -> impl Iterator<Item = (Host, &'static Activity, &'static openmoat_hosts::Started)> {
+    Host::ALL.into_iter().filter_map(|host| {
+        let liveness = host.spec().install.as_ref()?.liveness.as_ref()?;
+        let Sessions::Known(activity) = liveness.sessions else {
+            return None;
+        };
+        Some((host, activity.first()?, liveness.started.as_ref()?))
+    })
+}
+
+/// A session whose start reached the guard and whose own transcript names a
+/// covered tool, with no call of it, warns at once; a call clears it.
+#[test]
+fn a_started_session_that_called_a_tool_without_a_call_warns_at_once() {
+    let mut seen = 0;
+    for (host, activity, started) in started() {
+        seen += 1;
+        let sb = Sandbox::installed(&[&dir_of(host)]);
+        let cwd = sb.project();
+        let start = serde_json::json!({
+            "session_id": "fast1", "cwd": cwd.to_string_lossy(),
+            "hook_event_name": started.tool, "source": "startup"
+        });
+        let out = sb.guard(host.id(), &start.to_string());
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+        let folder = activity
+            .dir
+            .iter()
+            .fold(sb.home.join(dir_of(host)), |at, part| {
+                at.join(if *part == Activity::ANY { "p" } else { part })
+            });
+        fs::create_dir_all(&folder).unwrap();
+        let file = folder.join(format!("fast1{}", activity.ending));
+        let line = serde_json::json!({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}
+        ]}});
+        fs::write(&file, format!("{line}\n")).unwrap();
+        // Written a minute ago: the guard had its budget to record a call.
+        // The file was made after the start, which tells it from a resumed
+        // session's: its birth time stays.
+        age_keeping_birth(&file, 1);
+        let doc = status(&sb);
+        let hook = entry(&doc, "hooks", host);
+        assert_eq!(hook["state"], "unchecked", "{host}: {doc}");
+        assert_eq!(hook["tool"], "Bash", "{host}: {doc}");
+        let shown = crate::common::squash(&text(&sb.moat(&["status"])));
+        assert!(
+            shown.contains("tool-call hook did not run"),
+            "{host}: {shown}"
+        );
+
+        let call = crate::common::bash_payload("fast1", &cwd, "ls");
+        sb.guard(host.id(), &call);
+        let doc = status(&sb);
+        assert_ne!(
+            entry(&doc, "hooks", host)["state"],
+            "unchecked",
+            "{host}: {doc}"
+        );
+    }
+    assert!(seen > 0, "no host's session start reaches the guard");
 }

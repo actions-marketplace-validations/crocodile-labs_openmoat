@@ -55,7 +55,7 @@ Each agent's gaps and the reasons are in
 
 - **Outside an OS sandbox, the hook decides alone.** For hook-only agents (OpenClaw,
   GitHub Copilot CLI, pi, Gemini CLI, OpenCode, Hermes Agent, the Cline CLI, goose, the
-  Antigravity CLI, and
+  Antigravity CLI, Qwen Code, Crush, and
   Claude Code and Cursor on native Windows), an allowed call runs with your permissions,
   so a classifier mistake is a bypass. `openmoat status` and `openmoat doctor` name the
   `openmoat run` command that puts each of them in an OS sandbox, or say why there is none
@@ -68,6 +68,13 @@ Each agent's gaps and the reasons are in
   sandbox or, on Linux, without the Isolated tier (ADR-080). An agent started without
   `openmoat run` is not refused
   ([POLICY.md §9.3](POLICY.md#93-requiring-openmoat-runs-full-boundary-requirerun)).
+- **The protection score counts kernel features, not how well they hold.** It says which
+  of the features `openmoat run` can use are in force, weighted to 100; a bug in one of
+  them, or in OpenMoat's rules for it, does not lower it. It compares runs on one system,
+  not systems, and the hook alone scores 0. `sandbox.strict: true` refuses any run below
+  100, so on Linux before 7.2 (Landlock ABI 10) it refuses every run; it is read from your
+  own policy only and, like `require.run`, says nothing about an agent started without
+  `openmoat run` ([SANDBOX.md](SANDBOX.md#the-protection-score-and-strict-mode), ADR-108).
 - **`openmoat run` scrubs the environment only when asked.** With `sandbox.env: scrubbed`,
   `--scrub-env` or `require.run: full-boundary`, only an allowlist of variables reaches the
   agent ([POLICY.md §9.6](POLICY.md#96-the-environment-openmoat-run-passes-on-sandboxenv),
@@ -175,7 +182,10 @@ Each agent's gaps and the reasons are in
   this protection. The same goes for the audit log: such a program reads the audit key
   (`~/.moat/audit.key`) as easily as it writes the log, so it can rewrite both; the key
   stops only someone who can change the log but not read the key
-  ([ADR-101](adr/ADR-101-keyed-audit-chain.md)). On Windows the key file is guarded by
+  ([ADR-101](adr/ADR-101-keyed-audit-chain.md)). It reads the checkpoint signing key
+  (`~/.moat/audit.key.ed25519`) too, and can sign checkpoints of a rewritten log; a
+  checkpoint copied off the machine before that still shows the rewrite
+  ([ADR-110](adr/ADR-110-signed-audit-checkpoints.md)). On Windows the key file is guarded by
   the state directory's access list, not by mode bits, as the other keys are.
 - **The check and the call are two moments.** OpenMoat decides on what the call names;
   a file or link that changes between the check and the command running, and hard
@@ -266,8 +276,10 @@ Each agent's gaps and the reasons are in
   run, no MCP ticket, no proxy credential). Read those rows as what was asked from inside
   the run (ADR-070, ADR-071, ADR-075).
 
-- **Some agents run a call when the hook fails.** Codex, and Claude Code before
-  2.1.295, run a call unchecked if `openmoat` is missing. Codex also skips untrusted
+- **Some agents run a call when the hook fails.** Claude Code before 2.1.295 runs a
+  call unchecked if `openmoat` is missing. Codex, Gemini CLI, Qwen Code and Crush block
+  it then, because OpenMoat's hook command exits 2 itself when the guard could not run
+  or was killed (ADR-109), and run it only when the hook times out. Codex also skips untrusted
   hooks: after `openmoat init`, open Codex, run `/hooks` and trust both OpenMoat hooks;
   `status` and `doctor` report missing trust and broken legacy entries. GitHub Copilot
   CLI and Gemini CLI run a call whose hook times out. OpenClaw, pi and OpenCode run calls
@@ -312,7 +324,10 @@ When a hook is turned off, or an update stops running it, the agent says nothing
 neither does the hook. `openmoat status`, `openmoat doctor` and `openmoat watch` warn
 when an agent wrote sessions since its hook, settings or program last changed and no
 call of its reached OpenMoat ([USAGE.md](USAGE.md#does-the-agent-still-run-openmoats-hook),
-ADR-104). That warning has limits: it comes only after a session is ten minutes old; it
+ADR-104). For Claude Code, whose session start reaches OpenMoat, the warning comes at
+once when a session that started called a tool OpenMoat's hook covers and none of its
+calls arrived within 30 s of the transcript's last write (ADR-109); a resumed session
+waits for the general check. The general warning has limits: it comes only after a session is ten minutes old; it
 needs the agent's session files, which OpenMoat does not know for goose, Hermes Agent,
 Antigravity CLI and Crush (a note there says no call came) nor for Cursor's editor or
 the Cline VS Code extension; a session that used no tool looks the same as one whose calls went unchecked,
@@ -325,19 +340,19 @@ call.
 | Agent | Hook cannot start, crashes or exits non-zero | Hook times out | Time limit | Turned off (every call runs unchecked) | Fails open | Source |
 |---|---|---|---|---|---|---|
 | Claude Code | blocks the call from 2.1.295 (`openmoat init` asks for it); runs it before | blocks the call from 2.1.295 (`openmoat init` asks for it); runs it before | 600 s | `disableAllHooks: true` in a settings file (a project's included), `--settings '{"disableAllHooks": true}'`, or deleting the entry | before that version: cannot start, crashes or exits non-zero; times out | [1](https://code.claude.com/docs/en/hooks) |
-| Codex | runs the call | runs the call | 600 s | `[features] hooks = false` in `config.toml` (or `requirements.toml`), turning the hook off in `/hooks`, or a hook Codex has not been told to trust | yes: cannot start, crashes or exits non-zero; times out | [1](https://learn.chatgpt.com/docs/hooks) [2](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/hooks/src/engine/command_runner.rs#L417) |
+| Codex | blocks the call | runs the call | 600 s | `[features] hooks = false` in `config.toml` (or `requirements.toml`), turning the hook off in `/hooks`, or a hook Codex has not been told to trust | yes: times out | [1](https://learn.chatgpt.com/docs/hooks) [2](https://github.com/openai/codex/blob/rust-v0.166.0/codex-rs/hooks/src/engine/command_runner.rs#L417) |
 | Cursor | blocks the call | blocks the call | 600 s | deleting the entry from `hooks.json`, or an entry without `failClosed: true` (`openmoat status` calls that not protected) | no | [1](https://cursor.com/docs/agent/hooks) |
 | OpenClaw | blocks the call | blocks the call | 45 s | a Gateway that does not load the plugin (disabled in `openclaw.json`, or a load error, which leaves the Gateway running) | no | [1](https://docs.openclaw.ai/plugins/hooks/reference) |
 | GitHub Copilot CLI | blocks the call | runs the call | 600 s | `disableAllHooks: true` in a hook file or in a repository's `settings.json`, or deleting the hook file | yes: times out | [1](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-hooks-reference) |
 | pi | blocks the call | blocks the call | 45 s | `pi --no-extensions`, or an `extensions` entry in pi's or a trusted project's settings that turns the extension off | no | [1](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md) |
-| Gemini CLI | blocks the call when the hook cannot start (`openmoat` missing); runs it when the hook crashes or exits non-zero | runs the call | 600 s | `hooks` turned off in the user's or a project's `settings.json`, or a folder Gemini CLI does not trust (which runs no settings hooks) | yes: crashes or exits non-zero; times out | [1](https://geminicli.com/docs/hooks/reference/) [2](https://github.com/google-gemini/gemini-cli/blob/v0.65.0/packages/core/src/hooks/hookRunner.ts) |
+| Gemini CLI | blocks the call | runs the call | 600 s | `hooks` turned off in the user's or a project's `settings.json`, or a folder Gemini CLI does not trust (which runs no settings hooks) | yes: times out | [1](https://geminicli.com/docs/hooks/reference/) [2](https://github.com/google-gemini/gemini-cli/blob/v0.65.0/packages/core/src/hooks/hookRunner.ts) |
 | OpenCode | blocks the call | blocks the call | 45 s | OpenCode 1's `--pure` or `OPENCODE_PURE`, OpenCode 2's `-openmoat` in `plugins` (a project's included), or an error loading the plugin | no | [1](https://opencode.ai/docs/build/plugins/server) |
 | Hermes Agent | blocks the call | blocks the call | 30 s | the hook missing from `config.yaml` or from `shell-hooks-allowlist.json` (gateway, cron and ACP sessions), another profile, or `HERMES_SAFE_MODE=1` | no | [1](https://github.com/NousResearch/hermes-agent/blob/v0.22.5/agent/shell_hooks.py) |
 | Cline CLI | runs the call | runs the call | 120 s | `--yolo`, or `--config`, `--hooks-dir` or a moved `CLINE_DIR` OpenMoat did not install into | yes: cannot start, crashes or exits non-zero; times out | [1](https://github.com/cline/cline/blob/cli-v3.0.74/sdk/packages/core/src/hooks/hook-file-hooks.ts) [2](https://github.com/cline/cline/blob/cli-v3.0.74/sdk/packages/core/src/hooks/subprocess-runner.ts) |
 | goose | blocks the call | blocks the call | 60 s | `disabledPlugins` in a `settings.json`, `enabled: false` under `plugins` in `config.yaml`, a project plugin named `openmoat`, or a `hooks.json` goose cannot read | no | [1](https://github.com/aaif-goose/goose/blob/v1.57.0/crates/goose/src/hooks/mod.rs) |
 | Antigravity CLI | blocks the call | not documented; assumed to run the call | 600 s | `enabled: false` on the entry (a project's `.agents/hooks.json` included), or deleting it | yes: times out | [1](https://antigravity.google/docs/hooks?tab=cli) [2](https://github.com/crocodile-labs/openmoat/actions/runs/43254846914) |
-| Qwen Code | runs the call | runs the call | 600 s | `disableAllHooks: true` in a settings file (whether a project's turns the person's hooks off was not verified, so OpenMoat assumes it does), `--safe-mode`, `--bare`, or deleting the entry | yes: cannot start, crashes or exits non-zero; times out | [1](https://qwenlm.github.io/qwen-code-docs/en/users/features/hooks/) [2](https://github.com/QwenLM/qwen-code/blob/main/packages/core/src/hooks/hookRunner.ts) [3](https://github.com/QwenLM/qwen-code/blob/main/packages/core/src/core/toolHookTriggers.ts) |
-| Crush | runs the call | runs the call | 600 s | deleting the entry: no setting turns hooks off, and the hooks of every configuration file are appended to one another | yes: cannot start, crashes or exits non-zero; times out | [1](https://github.com/charmbracelet/crush/blob/main/docs/hooks/README.md) [2](https://github.com/charmbracelet/crush/blob/main/internal/hooks/runner.go) |
+| Qwen Code | blocks the call | runs the call | 600 s | `disableAllHooks: true` in a settings file (whether a project's turns the person's hooks off was not verified, so OpenMoat assumes it does), `--safe-mode`, `--bare`, or deleting the entry | yes: times out | [1](https://qwenlm.github.io/qwen-code-docs/en/users/features/hooks/) [2](https://github.com/QwenLM/qwen-code/blob/main/packages/core/src/hooks/hookRunner.ts) [3](https://github.com/QwenLM/qwen-code/blob/main/packages/core/src/core/toolHookTriggers.ts) |
+| Crush | blocks the call | runs the call | 600 s | deleting the entry: no setting turns hooks off, and the hooks of every configuration file are appended to one another | yes: times out | [1](https://github.com/charmbracelet/crush/blob/main/docs/hooks/README.md) [2](https://github.com/charmbracelet/crush/blob/main/internal/hooks/runner.go) |
 | Continue CLI | runs the call | runs the call | 600 s | always: the released Continue CLI fires no hook | yes: cannot start, crashes or exits non-zero; times out | [1](https://github.com/continuedev/continue/blob/main/extensions/cli/src/hooks/hookRunner.ts) |
 <!-- /generated -->
 - **Agent settings can turn hooks off.** Codex runs a new or changed hook only once you
@@ -365,6 +380,19 @@ call.
   agent over it (ADR-098), but an agent started directly loads it. `openmoat init
   --managed` puts OpenMoat's hook where a project cannot turn it off for Claude Code
   and GitHub Copilot CLI; the other agents have no such place OpenMoat writes.
+- **Other hooks run beside OpenMoat's.** A plugin update or a settings edit can add a
+  hook command the agent runs at an event OpenMoat never sees, and git runs what a
+  repository's `.git/config` names before any hook. OpenMoat cannot stop those programs
+  from running; it records each one in the lock (ADR-109) and, while one is new or
+  changed, names it in `openmoat status`, `doctor` and `watch` until a person runs
+  `openmoat hooks accept`. Only one whose command the policy denies changes the
+  agent's calls (they are denied); any other new hook, harmful or not, runs beside
+  them unheld unless your policy says `hooks.foreign: hold`. A `SessionStart` hook
+  has already run by then. Places the agents' specs do not name
+  are not read: Gemini CLI and Qwen Code extensions, GitHub Copilot CLI and Codex
+  plugins, other OpenClaw and Hermes Agent plugins, and pi's and OpenCode's user
+  extension folders. Calls of tools OpenMoat does not check and MCP calls held by their
+  own pins are decided before the ledger.
 - **Other plugins share the agent's process.** OpenCode loads other plugins and a
   project's `.opencode/plugins/` at start, with no prompt, and they can change what
   OpenMoat's plugin does; `openmoat status` and `openmoat doctor` warn about a
@@ -385,6 +413,14 @@ call.
 
 ## Limits of single checks
 
+- **The never-widen check proves some kinds of call, and samples the rest.** `openmoat
+  policy diff --widen`, `policy upgrade`, `trust`, `policy install` and the merge check's
+  `diff-widens` prove for file, host, fetch, environment and MCP rules that no subject
+  widens, when their search finishes. Shell commands, request rules and whole calls (their
+  folder, taint and request layers) are checked over the bundled calls, cases made from
+  both policies' rules and `--fixtures` files only: a widening for a command none of them
+  spells is not found. The output says which kind got which check
+  ([POLICY.md §8.3](POLICY.md#83-does-a-change-widen-openmoat-policy-diff---widen-adr-111), ADR-111).
 - **A decoy key's value is caught as exact text.** The `canary` check finds a decoy's value
   in a call or a proxied request in any letter case, but not encoded (base64, hex), split
   across calls or rebuilt by a program before it is sent, as for brokered secrets. A
@@ -444,21 +480,37 @@ call.
   `$env:USERPROFILE\`, `%USERPROFILE%\`, `$HOME\`); a UNC path, `${env:USERPROFILE}`,
   another variable, and a host or path built at run time (`"ev" + "il.example"`) are not
   seen. Another spelling of a planted
-  address, a subdomain of a planted URL host and a planted command run through a wrapper
-  are linked; a host by another name, a reworded command or a relative path is not
-  ([POLICY.md §4.1.2](POLICY.md#412-injected-input)). Only the output of the shell,
+  address (a percent-encoded one too), a subdomain of a planted URL host, a planted
+  command run through a wrapper or written with its program's directory, `./` or `~`, and
+  a relative path placed against the directory it was read in are linked; a host by
+  another name, a command with its flags re-ordered or other words, and anything the
+  model paraphrases, encodes or summarises are not
+  ([POLICY.md §4.1.2](POLICY.md#412-injected-input), ADR-113). Only the output of the shell,
   fetches, searches, MCP resource reads and MCP tools is read (every tool's on Copilot), each kept up to fixed
   bounds, so a page full of decoys can push a planted host out. Fetches, searches and MCP
   calls themselves are not checked against it, and an install without the
   after-call entry (`openmoat init` adds it; Codex runs it once trusted in `/hooks`)
   links nothing
   ([ADR-057](adr/ADR-057-injected-input-and-instruction-files.md)).
-- **Sending what a session collected is recorded, not stopped.** A send after the session
-  read many files outside the project, or packed them into an archive or an encoding,
-  carries `@staging-egress` in the audit log and in `openmoat report`, but no default rule
-  decides it yet. Only reads that went through OpenMoat's hook are counted, not files a
-  script or program read on its own ([ADR-061](adr/ADR-061-staging-chain.md),
-  proposed).
+- **Sending what a session collected is held only in part.** A send of a file the session
+  packed from files outside the project, and any send after it wrote private data into a
+  file, need review (`staging-egress`); a send after many outside reads with nothing
+  packed is recorded in the audit log and `openmoat report` but not decided until its
+  thresholds are measured. A file a `Write` tool fills with private data read in an
+  earlier call is not seen as staging, and only reads that went through OpenMoat's hook
+  count, not files a script or program read on its own
+  ([ADR-061](adr/ADR-061-staging-chain.md), [ADR-113](adr/ADR-113-trifecta-staging-and-argument-conditions.md)).
+- **The lethal trifecta needs all three parts in one session.** After private data and
+  untrusted content, a call that can send data out needs review (`lethal-trifecta`), but
+  private data read in one session and sent from another is not linked, `openmoat run`'s
+  proxy applies session taint only, and a way out OpenMoat does not know (a program that
+  uploads under another name) is not the third part
+  ([POLICY.md §4.6](POLICY.md#46-the-lethal-trifecta)).
+- **Argument conditions read what the host sends.** A `when:` condition sees an MCP call's
+  arguments as the payload carries them: a server that takes recipients from its own state
+  or resolves a contact name to an address is not seen, and a key the condition does not
+  name holds a negated condition rather than passing it
+  ([POLICY.md §2.4](POLICY.md#24-argument-conditions-when)).
 - **The container check reads the flags as written.** `container-host` matches the
   options a `docker`, `podman` or `nerdctl` command line shows; another spelling, or the
   same options in a compose file or a script, is not caught by it

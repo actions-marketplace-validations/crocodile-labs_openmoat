@@ -74,6 +74,7 @@ use crate::staging::{self, StagingSettings};
 use crate::taint::{self, TaintSettings};
 use crate::verdict::Verdict;
 
+mod approval;
 mod env_name;
 mod error;
 mod hook_only;
@@ -82,6 +83,7 @@ mod require;
 mod schema;
 mod text;
 
+pub use approval::Approval;
 pub use env_name::{RunEnv, env_name_problem};
 pub use error::PolicyError;
 pub use require::{Require, RequiredBy, RequiredLevel, Requirement, RunBoundary};
@@ -142,6 +144,11 @@ pub struct RuleGroup {
     /// with `net` or `fetch`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hook_only: bool,
+    /// Argument conditions (ADR-113): the group matches a call only when one
+    /// of its patterns does and every condition holds. `deny` and `review`
+    /// groups only, so a condition can only narrow what the group holds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when: Vec<crate::predicate::Predicate>,
 }
 
 impl RuleGroup {
@@ -202,52 +209,6 @@ impl Default for Scope {
     fn default() -> Self {
         Self {
             project_roots: default_roots(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ApprovalChannel {
-    Terminal,
-    Telegram,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RememberScope {
-    Once,
-    Session,
-    Permanent,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Approval {
-    #[serde(default = "default_channel")]
-    pub channel: ApprovalChannel,
-    #[serde(default = "default_remember")]
-    pub remember: RememberScope,
-    #[serde(default = "default_timeout")]
-    pub timeout_s: u32,
-}
-
-fn default_channel() -> ApprovalChannel {
-    ApprovalChannel::Terminal
-}
-fn default_remember() -> RememberScope {
-    RememberScope::Session
-}
-fn default_timeout() -> u32 {
-    300
-}
-
-impl Default for Approval {
-    fn default() -> Self {
-        Self {
-            channel: default_channel(),
-            remember: default_remember(),
-            timeout_s: default_timeout(),
         }
     }
 }
@@ -338,6 +299,13 @@ pub struct Policy {
     /// does not parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unattended: Option<Unattended>,
+    /// What a new or changed hook command, plugin hook or git program no
+    /// person accepted does to the calls of the agent that loads it
+    /// (`hooks.foreign`, ADR-109). Absent, the default: only one whose
+    /// command the policy denies changes them. Only the person's own policy
+    /// holds it: a repository policy or a pack with the key does not parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hooks: Option<HookSettings>,
     /// The `require:` sections of the repository policy and the packs merged
     /// in ([`Policy::add_requirement`]), read with [`Self::require`] by
     /// [`Policy::required_for`], which takes the strictest: they raise a
@@ -417,6 +385,13 @@ pub struct SandboxSettings {
     /// policy or a pack has no `sandbox:`.
     #[serde(default, skip_serializing_if = "ProjectHookOff::is_refuse")]
     pub project_hook_off: ProjectHookOff,
+    /// `openmoat run` starts only when every kernel feature of its protection
+    /// score is in force (ADR-108): planned before the start, confirmed after
+    /// it, so a missing Landlock step, a port-only network or the Lightweight
+    /// tier refuses the run (fail closed). Read from the person's own policy
+    /// alone: a repository policy or a pack has no `sandbox:`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strict: bool,
 }
 
 /// `sandbox.project_hook_off` (ADR-098).
@@ -507,6 +482,32 @@ pub enum Unattended {
     Review,
 }
 
+/// The `hooks:` section (ADR-109).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookSettings {
+    /// What a hook the foreign-hook ledger finds new or changed does to the
+    /// agent's calls; absent, [`ForeignHooks::Warn`].
+    #[serde(default)]
+    pub foreign: ForeignHooks,
+}
+
+/// `hooks.foreign`: what a new or changed hook command, plugin hook or git
+/// program no person accepted does to the calls of the agent that loads it
+/// (ADR-109).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ForeignHooks {
+    /// `openmoat status`, `doctor` and `watch` name it; the calls change only
+    /// while its command is one the policy denies, which denies them. The
+    /// default.
+    #[default]
+    Warn,
+    /// Every one holds the calls for review (a deny where its command is
+    /// denied) until a person accepts it.
+    Hold,
+}
+
 /// The release age `moat run` requires of new package versions when the policy
 /// does not say (ADR-030).
 pub const DEFAULT_PACKAGE_MIN_RELEASE_AGE_DAYS: u16 = 7;
@@ -553,11 +554,27 @@ impl Policy {
             .unwrap_or_default()
     }
 
+    /// Whether `openmoat run` refuses to start without its whole protection
+    /// score (`sandbox.strict`, ADR-108); `false` unless the person's own
+    /// policy says so.
+    #[must_use]
+    pub fn sandbox_strict(&self) -> bool {
+        self.sandbox.as_ref().is_some_and(|s| s.strict)
+    }
+
     /// What a `defer` becomes in an agent mode that asks no person
     /// (`unattended:`, ADR-102): `defer` unless the policy says `review`.
     #[must_use]
     pub fn unattended(&self) -> Unattended {
         self.unattended.unwrap_or_default()
+    }
+
+    /// What a new or changed foreign hook does to the agent's calls
+    /// (`hooks.foreign`, ADR-109): [`ForeignHooks::Warn`] unless the person's
+    /// own policy says `hold`.
+    #[must_use]
+    pub fn foreign_hooks(&self) -> ForeignHooks {
+        self.hooks.map(|h| h.foreign).unwrap_or_default()
     }
 
     /// Whether `moat mcp proxy` pins a new server's tools without a person
@@ -633,6 +650,17 @@ impl Policy {
                 return Err(PolicyError::EmptyRule(group.id.clone()));
             }
             text::check(group)?;
+        }
+        let narrowing = self
+            .deny
+            .iter()
+            .chain(&self.repo_review)
+            .chain(&self.review);
+        for group in narrowing {
+            crate::predicate::check(group, true)?;
+        }
+        for group in self.allow.iter().chain(&self.defer) {
+            crate::predicate::check(group, false)?;
         }
         hook_only::check(self)?;
         for (name, paths) in &self.executables {

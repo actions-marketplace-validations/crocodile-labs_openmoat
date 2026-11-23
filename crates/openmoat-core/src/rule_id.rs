@@ -50,6 +50,9 @@ pub const INJECTED_INPUT: &str = "injected-input";
 /// A call held because its arguments carry text another MCP server returned
 /// in this session.
 pub const MCP_CROSS_SERVER: &str = "mcp-cross-server";
+/// A call that can send data out, after the session read private data and
+/// content someone else may have written (ADR-113).
+pub const LETHAL_TRIFECTA: &str = "lethal-trifecta";
 
 /// Every decision the policy lock forces.
 pub const KERNEL_INTEGRITY: &str = "kernel-integrity";
@@ -92,6 +95,10 @@ pub const PUSH_UNCHECKED: &str = "push-unchecked";
 /// A tool call denied because its MCP server's definition is not the one a
 /// person accepted.
 pub const MCP_SERVER_CHANGED: &str = "mcp-server-changed";
+/// A call of an agent that loads a hook command, plugin or program-running
+/// setting no person accepted since it was added or changed, whose command
+/// the policy denies; any such one under `hooks.foreign: hold` (ADR-109).
+pub const FOREIGN_HOOK: &str = "foreign-hook";
 /// A call `openmoat mcp proxy` passed.
 pub const MCP_PROXY: &str = "mcp-proxy";
 /// A tool `openmoat mcp proxy` holds until a person accepts it.
@@ -115,6 +122,13 @@ pub const REMOTE_DENIED: &str = "remote-denied";
 pub const REMOTE_REFUSED: &str = "remote-refused";
 /// A remote approval request nobody answered in time.
 pub const REMOTE_EXPIRED: &str = "remote-expired";
+
+/// The row beside a call held for review that ran as it was held: the
+/// action the host reports ran is the one shown (OWASP ASI09, ADR-110).
+pub const REVIEW_RAN_AS_SHOWN: &str = "review-ran-as-shown";
+/// The row beside a call held for review whose action, when it ran, was not
+/// the one shown: its input changed after the person saw it (ADR-110).
+pub const REVIEW_RAN_CHANGED: &str = "review-ran-changed";
 
 /// The row `openmoat run` links its audit session with.
 pub const RUN_SESSION: &str = "run-session";
@@ -203,6 +217,9 @@ pub const DIFF_LINK: &str = "diff-link";
 pub const DIFF_SUBMODULE: &str = "diff-submodule";
 /// `policy check-diff`: a diff that was not read in full.
 pub const DIFF_UNCHECKED: &str = "diff-unchecked";
+/// `policy check-diff`: a change to a policy file the check reads that moves a
+/// call toward allow (ADR-111).
+pub const DIFF_WIDENS: &str = "diff-widens";
 
 /// The default policy's self-protection: OpenMoat's own files and the hosts'
 /// hook files.
@@ -211,6 +228,14 @@ pub const KERNEL_SELF: &str = "kernel-self";
 pub const AGENT_CREDENTIALS: &str = "agent-credentials";
 /// The default policy's rule for Kerberos ticket caches.
 pub const KERBEROS_TICKETS: &str = "kerberos-tickets";
+/// The default policy's rule for build tools' credential files.
+pub const BUILD_CREDENTIALS: &str = "build-credentials";
+/// The default policy's rule for commands that print the whole environment.
+pub const ENV_DUMP: &str = "env-dump";
+/// The default policy's rule for secret environment variables.
+pub const ENV_SECRETS: &str = "env-secrets";
+/// The default policy's review of a send after staging (ADR-061, ADR-113).
+pub const STAGING_EGRESS: &str = "staging-egress";
 /// The default policy's `allow` rule naming each agent's own temporary
 /// folders, generated from the host specs.
 pub const AGENT_TEMP: &str = "agent-temp";
@@ -225,6 +250,10 @@ pub const POLICY_RULES: &[&str] = &[
     KERBEROS_TICKETS,
     AGENT_TEMP,
     SECRETS_PATHS,
+    BUILD_CREDENTIALS,
+    ENV_DUMP,
+    ENV_SECRETS,
+    STAGING_EGRESS,
 ];
 
 /// The words of one of OpenMoat's own checks in a block message (ADR-059).
@@ -275,6 +304,7 @@ pub const BUILTIN_RULES: &[BuiltinRule] = &[
     worded(REQUEST_RULE, &words::REQUEST_RULE),
     worded(INJECTED_INPUT, &words::INJECTED_INPUT),
     worded(MCP_CROSS_SERVER, &words::MCP_CROSS_SERVER),
+    worded(LETHAL_TRIFECTA, &words::LETHAL_TRIFECTA),
     worded(KERNEL_INTEGRITY, &words::KERNEL_INTEGRITY),
     worded(KERNEL_ERROR, &words::KERNEL_ERROR),
     worded(UNGOVERNED, &words::UNGOVERNED),
@@ -291,6 +321,7 @@ pub const BUILTIN_RULES: &[BuiltinRule] = &[
     worded(PUSH_RUNS_LATER, &words::PUSH_RUNS_LATER),
     worded(PUSH_UNCHECKED, &words::PUSH_UNCHECKED),
     worded(MCP_SERVER_CHANGED, &words::MCP_SERVER_CHANGED),
+    worded(FOREIGN_HOOK, &words::FOREIGN_HOOK),
     quiet(MCP_PROXY),
     quiet(MCP_TOOL_HELD),
     quiet(MCP_UNATTRIBUTED),
@@ -301,6 +332,8 @@ pub const BUILTIN_RULES: &[BuiltinRule] = &[
     quiet(REMOTE_DENIED),
     quiet(REMOTE_REFUSED),
     quiet(REMOTE_EXPIRED),
+    quiet(REVIEW_RAN_AS_SHOWN),
+    quiet(REVIEW_RAN_CHANGED),
     quiet(RUN_SESSION),
     quiet(RUN_NO_ISOLATE),
     quiet(RUN_ISOLATION_UNAVAILABLE),
@@ -337,6 +370,7 @@ pub const BUILTIN_RULES: &[BuiltinRule] = &[
     quiet(DIFF_LINK),
     quiet(DIFF_SUBMODULE),
     quiet(DIFF_UNCHECKED),
+    quiet(DIFF_WIDENS),
 ];
 
 /// OpenMoat's own rule `id`; `None` for any other id.

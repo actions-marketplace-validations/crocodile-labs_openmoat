@@ -488,6 +488,46 @@ Then, in a terminal of your own:
    sandboxes as `openmoat sandbox sync` does. `openmoat` alone offers the same at a
    terminal.
 
+### From 0.25.0 to the next release
+
+What you will see, and what to run:
+
+- **Codex, Gemini CLI, Qwen Code and Crush show their hook as out of date** until you run
+  `openmoat init`: the new hook entry blocks the call when `openmoat` is missing or killed
+  (ADR-109). Run `openmoat init` once; Codex then asks you to trust the changed hook in
+  `/hooks`, once.
+- **The first `openmoat init` records the other hooks the agents load** (plugin hooks,
+  helper commands, a project's hook files, `.git/config` programs), so nothing already
+  there is named or blocked; until then `openmoat status` and `openmoat doctor` say they
+  are not recorded yet. One added later is named by `openmoat status` until you run
+  `openmoat hooks accept` ([USAGE.md](USAGE.md#other-hooks-the-agents-run)).
+- **`openmoat policy upgrade` offers the new default rules** (ADR-112): `system-files`,
+  `stops-system`, `credential-egress`, and more paths and patterns in `secrets-paths`,
+  `persistence` and `token-egress`. After it, a listing or recursive read of `/etc` or
+  `/etc/ssh` itself (`ls /etc`, `grep -r … /etc`) needs review, because those folders now
+  hold secret paths; writes in the system's folders and stopping a system process need
+  review too. An upgrade that would move any call toward allow is listed and applied only
+  with `openmoat policy upgrade --accept-widening`; the upgrade from the 0.25.0 default
+  only narrows.
+- **New reviews after private data meets untrusted content** (ADR-113): once a session
+  has read private data (a key, an agent's login, the whole environment) and content
+  someone else may have written (a page, an MCP result, `gh issue view`), a call that can
+  send data out needs review (`lethal-trifecta`), to an allowed host and `git push` too.
+  This needs no upgrade step; sessions that never read private data are unchanged
+  ([USAGE.md](USAGE.md#private-data-untrusted-content-and-a-way-out-the-lethal-trifecta)).
+- **Collect-then-send needs review**: a send of a file the session packed from outside the
+  project, and any send after the session copied private data into a file, are reviewed
+  by the new default rule `staging-egress`, which `openmoat policy upgrade` adds
+  ([USAGE.md](USAGE.md#data-packed-or-copied-before-it-is-sent-staging)).
+- **Rules may test arguments** (`when:`, POLICY.md §2.4). An older binary refuses a
+  policy that uses it, so update every machine before you share such a rule.
+- **`openmoat doctor` shows new rows**: the protection score of each `openmoat run` tier,
+  and the audit log's checkpoint public key. The checkpoint signing key
+  (`~/.moat/audit.key.ed25519`) is made by `openmoat init` or the first
+  `openmoat audit checkpoint`; logs from earlier releases keep verifying as before.
+- **`openmoat status` lists hook-only agents `openmoat run` can confine here** under
+  `Needs your attention`, with the command; Qwen Code and Crush now get one.
+
 ### What can change between 0.x minor releases
 
 Before 1.0 a minor release (0.5 → 0.6) may change things a patch release does not.

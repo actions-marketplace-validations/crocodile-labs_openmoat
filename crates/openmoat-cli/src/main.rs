@@ -6,7 +6,9 @@
 
 mod anchor;
 mod approvals;
+mod arguments;
 mod audit_key;
+mod audit_signing;
 mod canary;
 mod cli;
 mod commands;
@@ -20,6 +22,7 @@ mod guard_relay;
 mod hangs;
 mod heartbeat;
 mod home;
+mod hook_ledger;
 mod install;
 mod integrity;
 mod json5;
@@ -61,6 +64,7 @@ mod terminal;
 mod time;
 mod trust;
 mod upgrade;
+mod widen;
 
 use std::process::ExitCode;
 
