@@ -59,11 +59,27 @@ Each agent's gaps and the reasons are in
   Claude Code and Cursor on native Windows), an allowed call runs with your permissions,
   so a classifier mistake is a bypass. `openmoat status` and `openmoat doctor` name the
   `openmoat run` command that puts each of them in an OS sandbox, or say why there is none
-  (macOS before 13, Windows, Linux without bubblewrap; OpenClaw's Gateway and the Continue
+  (macOS before 13, Linux without bubblewrap; on Windows the command starts a preview tier
+  that holds writes only, below; OpenClaw's Gateway and the Continue
   CLI have no command, [SANDBOX.md](SANDBOX.md#agents-openmoat-writes-no-sandbox-for)).
   The command is proved with a stand-in program, not the real agent. Claude Code's sandbox covers only `Bash`,
   `PowerShell` and `Monitor`; its file tools, `WebFetch` and MCP servers run outside it.
   Cursor runs some commands outside its sandbox.
+- **`openmoat run` on Windows holds writes and the process tree only (preview, ADR-115).**
+  A write-restricted token refuses writes outside the project, the run's temp directory
+  and `--write` paths, and a job ends every process the agent started. Not covered:
+  **reads** (the token is checked on writes only, so secrets, other agents' logins and
+  OpenMoat's state are readable to commands and the hook alone decides them); **the
+  network** (no Windows Filtering Platform filter: a program that ignores `HTTP_PROXY`
+  connects directly); anything whose access list grants `Everyone` write; denied places
+  inside the project below its top, matched by a glob, or made after the run started; the
+  tool-shell wrapper (tool commands keep the relay token); batch files (`.cmd`/`.bat`,
+  such as npm shims) are not started. The first run in a folder leaves an inherited
+  access-list entry on it for a SID no account has, and keeps it; adding it to a large
+  tree takes a while once. A Windows run scores at most 55/100, so
+  `require.run: full-boundary` and `sandbox.strict: true` refuse there. No real agent has
+  been run under it yet: the tests start `cmd.exe`
+  ([SANDBOX.md](SANDBOX.md#openmoat-run-on-windows-preview-writes-only)).
 - **`require.run: full-boundary` is about `openmoat run`.** It refuses a run without an OS
   sandbox or, on Linux, without the Isolated tier (ADR-080). An agent started without
   `openmoat run` is not refused
@@ -116,10 +132,16 @@ Each agent's gaps and the reasons are in
   commands fail, Codex's sandboxed commands do not start and Cursor asks before each
   command; the hook still decides each call. `openmoat doctor` and `openmoat status` say
   so and name the fixes, which are the machine's: no policy setting leaves one agent's
-  sandbox off yet. They read settings and ask the system's `bwrap` for one namespace, so
-  they cannot see a machine that allows a namespace but not one inside another, as
-  Claude Code's seccomp step makes; GitHub's `ubuntu-latest` runner is such a machine
-  (#784). Cursor's desktop app has an AppArmor profile of its own, which the check does
+  sandbox off yet. Ubuntu's `bwrap-userns-restrict` AppArmor profile lets bubblewrap
+  create its namespaces but takes every capability from what it starts, so Claude
+  Code's seccomp step, which makes a user namespace inside bubblewrap's, fails under it
+  whatever `kernel.apparmor_restrict_unprivileged_userns` says (GitHub's
+  `ubuntu-latest` runner loads it, #784); the fix is the profile Claude Code's
+  documentation gives in its place
+  ([SANDBOX.md](SANDBOX.md#what-each-agents-sandbox-needs-on-linux)). The checks see
+  that profile from the kernel's list where they may read it, else from
+  `/etc/apparmor.d/`; one loaded by hand and not installed there is not seen, and
+  they never create a nested namespace to test. Cursor's desktop app has an AppArmor profile of its own, which the check does
   not read, so with the restriction on and no `bwrap` installed it may warn for Cursor
   where Cursor's sandbox starts.
 - **On Linux without bubblewrap, nothing can be created at the top of the project, and
@@ -234,6 +256,29 @@ Each agent's gaps and the reasons are in
   named with what to set by hand; a goose extension of inline Python has no command to
   wrap. `openmoat status` lists the
   servers that start outside OpenMoat.
+- **The MCP gateway covers local stdio servers only.** Remote (HTTP) MCP servers, plugin
+  servers and managed MCP configuration are checked by the hook alone: their
+  definitions are pinned, their calls decided, but nothing pins what they list, holds
+  their tokens or checks where their OAuth discovery leads. A remote gateway is designed
+  as future work in [ADR-114](adr/ADR-114-mcp-2026-07-28-and-package-provenance.md)
+  (token custody, no token passthrough, SSRF-safe discovery) and not built.
+- **A package release is read offline, from what the package manager left.** A wrapped
+  or unwrapped stdio server's release is recorded when you accept it, from `npx`'s and
+  `uv tool`'s own files and an image digest on the command line
+  ([ADR-114](adr/ADR-114-mcp-2026-07-28-and-package-provenance.md)). A runner OpenMoat
+  does not read (`bunx`, `pnpm dlx`, a global install, a `node` path), an image tag
+  without a digest, or a cache that was cleared records nothing or only a tag, and a
+  release the package manager installs as the server starts is seen on the next check,
+  after that start.
+- **MCP 2026-07-28 retries need their own hook decision.** A `tools/call` that answers a
+  server's `input_required` result is a new call to the gateway; a host that does not
+  run its hook for the retry gets it refused. Sampling through a wrapped server is
+  refused unless the policy sets `mcp: { allow_sampling: true }`, and a URL-mode
+  elicitation must name an `https` page on a host the policy does not deny; the default
+  policy denies hosts it does not list, so a server's own sign-in page is refused until
+  you allow its host (`openmoat allow --site <host>`). A tool whose
+  schema refers to itself (`$ref` loops, a recursive tree type) or to another document is
+  refused.
 - **The hook sees an MCP call's arguments, not what the server then does.** A server
   started without `--sandbox` runs with your permissions: a tool that takes no path can
   still read any file you can and write anywhere, and neither the hook nor the gateway

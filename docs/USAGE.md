@@ -238,14 +238,20 @@ Claude Code needs `bwrap` and `socat` on `PATH`, and all three need to create us
 namespaces as you. Where they cannot, Claude Code's commands fail, Codex warns and its
 sandboxed commands do not start, and Cursor asks before each command. For each agent
 whose sandbox OpenMoat wrote, `openmoat doctor` reads `kernel.apparmor_restrict_unprivileged_userns`,
-`user.max_user_namespaces` and `kernel.unprivileged_userns_clone` from `/proc/sys`, looks
-for the programs on `PATH`, and uses the probe `openmoat run` makes anyway (the system's
-`bwrap` asked to create its namespaces, as you). A `bwrap` that creates them settles it.
-Nothing needs root and nothing on the machine changes; no decision changes either.
+`kernel.apparmor_restrict_unprivileged_unconfined`, `user.max_user_namespaces` and
+`kernel.unprivileged_userns_clone` from `/proc/sys`, which AppArmor profile applies to
+`/usr/bin/bwrap` (the kernel's list where you may read it, else the files in
+`/etc/apparmor.d/`), looks for the programs on `PATH`, and uses the probe `openmoat run`
+makes anyway (the system's `bwrap` asked to create its namespaces, as you). A `bwrap`
+that creates them settles the user-namespace question, but not for Claude Code under
+Ubuntu's `bwrap-userns-restrict` profile, which its sandbox fails under
+([SANDBOX.md](SANDBOX.md#what-each-agents-sandbox-needs-on-linux)). Each agent gets the
+fix its own documentation gives. Nothing needs root, no namespace is created for the
+check and nothing on the machine changes; no decision changes either.
 
 ```console
 $ openmoat doctor
-! Claude Code      the agent's own sandbox cannot start commands on this machine: kernel.apparmor_restrict_unprivileged_userns is 1 (Ubuntu's AppArmor restriction on user namespaces), so its Bash commands fail (`failIfUnavailable`, no unsandboxed commands). To fix it: an AppArmor profile that lets bwrap create user namespaces, as the agent's sandboxing documentation gives one (Ubuntu's apparmor-profiles package has bwrap-userns-restrict), then restart the agent; or `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, which lifts the restriction for every program until the next reboot; the same line in a file under /etc/sysctl.d/ keeps it after a reboot. OpenMoat has no setting that leaves this agent's sandbox off; its hook still decides each call
+! Claude Code      the agent's own sandbox cannot start commands on this machine: kernel.apparmor_restrict_unprivileged_userns is 1 (Ubuntu's AppArmor restriction on user namespaces), so its Bash commands fail (`failIfUnavailable`, no unsandboxed commands). To fix it: the AppArmor profile the agent's sandboxing documentation gives for /usr/bin/bwrap, in /etc/apparmor.d/bwrap (`profile bwrap /usr/bin/bwrap flags=(unconfined) { userns, }`, with its `abi` and `include` lines), then `sudo systemctl reload apparmor` and restart the agent; or `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, which lifts the restriction for every program until the next reboot; the same line in a file under /etc/sysctl.d/ keeps it after a reboot. OpenMoat has no setting that leaves this agent's sandbox off; its hook still decides each call
 $ openmoat status
 ! Claude Code      own sandbox cannot start commands here: user namespaces are blocked → openmoat doctor lists the fixes
 ```
@@ -256,7 +262,9 @@ leaves one agent's sandbox off yet, so there is no `openmoat init` choice to off
 `openmoat status --format json` lists the same as `own_sandbox_linux`: `host`, `agent`,
 `missing` (programs not on `PATH`), `user_namespaces` (`setting`: `max_user_namespaces`,
 `unprivileged_clone`, `apparmor` or `null`, and `bwrap`: bubblewrap's message or `null`;
-`null` when they are allowed), `outcome` and `fixes`. It is empty off Linux.
+`null` when they are allowed), `bwrap_userns_restrict` (`seen`: `loaded` or
+`installed`, and `restrict_unconfined`; `null` unless Ubuntu's profile applies to the
+`bwrap` an agent that fails under it runs), `outcome` and `fixes`. It is empty off Linux.
 
 ### Other hooks the agents run
 
@@ -1234,6 +1242,38 @@ $ openmoat audit export --session 9f2c…
 
   Calls of the same server, tools that only read, and other sessions stay quiet. To trust
   a server's flows, list it in the policy: `mcp: { flow_trusted: [github] }`.
+- **Both protocol revisions are checked.** An agent that speaks MCP 2026-07-28 has no
+  `initialize` handshake; the gateway pins the server's `server/discover` answer instead
+  (its instructions, capabilities and versions; the cache hints `ttlMs` and `cacheScope`
+  are not pinned) and the server information each result names. A server whose results
+  name another server than the one you accepted is held: all its calls are refused until
+  `openmoat mcp accept` (a new version number alone holds nothing). A server you accepted
+  under the older revision keeps its acceptance while its text stays the same
+  ([ADR-114](adr/ADR-114-mcp-2026-07-28-and-package-provenance.md)).
+- **What a server asks of you is checked, in any revision.** A sampling request (the
+  server asks the model to write text) is refused, as a request or inside a 2026-07-28
+  result's `inputRequests`; allow it with `mcp: { allow_sampling: true }`. A URL
+  elicitation (the server asks the agent to open a page for you) passes only for an
+  `https` page on a host that is not this machine, a private network or a link-local
+  address such as the cloud metadata service `169.254.169.254`, and that the policy does
+  not deny. The default policy denies connections to hosts it does not list, so a server
+  that sends you to its own sign-in page needs that host allowed: `openmoat allow --site
+  auth.example.com`. A refused request refuses the whole answer, with error -32001.
+- **Where an argument goes is part of the tool.** A 2026-07-28 tool can send an argument
+  as an HTTP header (`x-mcp-header`); `openmoat mcp accept` names each such mapping, and a
+  changed one holds the tool. A tool whose mappings break the specification's rules, or
+  whose schema's `$ref`s point outside it, loop or nest too deep, is left out and its calls
+  refused.
+- **A new package release is held like a changed definition.** When you accept a server
+  started with `npx`, `uvx` or `docker run`, OpenMoat records the release it runs, read
+  from the command line and the package manager's own files on this machine (no network):
+
+  ```text
+  MCP server `mail` in ~/.claude.json changed
+      package release: npm package postmark-mcp 1.0.15 (sha512-…) → npm package postmark-mcp 1.0.16 (sha512-…)
+  ```
+
+  Its tool calls are refused, and a wrapped one does not start, until you accept it again.
 
 The gateway covers stdio servers. A remote (HTTP) server is checked by the hook alone, and
 its results are not kept for the flow check. Tool results reach the model as the server
@@ -1263,7 +1303,15 @@ these takes one command in your own terminal (agents are denied all of them):
   `~/.claude.json`, a project's `.mcp.json`, Cursor's `mcp.json`, Codex's `config.toml`;
   every agent's files are in [POLICY.md](POLICY.md) §8) changed or was added since you
   last accepted the agents' MCP servers, so it starts a command nobody reviewed. Run `openmoat mcp accept <server>`: it shows what changed and asks.
-  Other servers and tools keep working meanwhile.
+  Other servers and tools keep working meanwhile. A server started with `npx`, `uvx` or
+  `docker run` is held the same way when the package release it runs is not the one you
+  accepted (`package release: … → …`); the same command clears it.
+- **A wrapped MCP server's sign-in link or sampling request is refused** (error -32001,
+  rule `mcp-server-request`): a link the server asks you to open must be `https` to a host
+  the policy allows, and the default policy denies connections to hosts it does not list.
+  To let a server send you to its own page, allow that host: `openmoat allow --site
+  auth.example.com`. Sampling stays off unless the policy sets
+  `mcp: { allow_sampling: true }` ([POLICY.md §8](POLICY.md#8-the-policy-lock)).
 - **A wrapped MCP server shows no tools**, or its calls fail with error -32602 naming
   `openmoat mcp accept`: `openmoat mcp proxy` holds every tool of a server until you have read
   it, the first time the server starts through the proxy too. Run `openmoat mcp accept
@@ -1430,7 +1478,7 @@ reads `~`. The file must not exist yet, and an agent cannot run it.
 | `openmoat hooks list` | list the hook commands, plugin hooks, program-running settings and git programs the agents load besides OpenMoat's hook, and what waits for `openmoat hooks accept`; exits 64 while something waits |
 | `openmoat hooks accept` | review each new or changed one, with the shell classifier's verdict, and record it; until then `openmoat status` names it, and the calls of the agent that loads it are denied when that verdict is deny (held for review for any, with `hooks.foreign: hold`) ([ADR-109](adr/ADR-109-foreign-hook-ledger-and-fail-safe-hooks.md)) |
 | `openmoat mcp accept [<server>]` | review a changed or new MCP server definition, or tools `openmoat mcp proxy` holds, and accept them; until then that server's tool calls are refused |
-| `openmoat mcp wrap [<server>…] [--sandbox \| --no-sandbox] [--dry-run]` · `openmoat mcp unwrap [<server>…]` | run stdio MCP servers through `openmoat mcp proxy`, which starts one only from a definition a person accepted, in `openmoat run`'s sandbox by default where it can sandbox (`--no-sandbox` opts out; a rewrap keeps the choice unless a flag is given), pins each tool's title, description, input and output schemas and annotations and hides one that changed or that nobody accepted yet, every tool of a server it has not seen included · point them back; `openmoat init --mcp-proxy` wraps every one, `openmoat uninstall` unwraps them ([ADR-026](adr/ADR-026-mcp-server-and-tool-pinning.md), [ADR-032](adr/ADR-032-mcp-proxy-holds-first-sight.md)) |
+| `openmoat mcp wrap [<server>…] [--sandbox \| --no-sandbox] [--dry-run]` · `openmoat mcp unwrap [<server>…]` | run stdio MCP servers through `openmoat mcp proxy`, which starts one only from a definition a person accepted, in `openmoat run`'s sandbox by default where it can sandbox, not on Windows, whose preview tier needs `--sandbox` (`--no-sandbox` opts out; a rewrap keeps the choice unless a flag is given), pins each tool's title, description, input and output schemas and annotations and hides one that changed or that nobody accepted yet, every tool of a server it has not seen included · point them back; `openmoat init --mcp-proxy` wraps every one, `openmoat uninstall` unwraps them ([ADR-026](adr/ADR-026-mcp-server-and-tool-pinning.md), [ADR-032](adr/ADR-032-mcp-proxy-holds-first-sight.md)) |
 | `openmoat mcp proxy --server <name> [--host <agent>] [--sandbox] [--write PATH]… -- <command>` | the wrapper `openmoat mcp wrap` writes into the agent's configuration; the agent starts it, you do not. `--host` names the agent whose file starts it: only that agent's hook decisions let its calls through (a server wrapped before this option existed gets it the next time you run `openmoat mcp wrap`). It starts the server only when this command line is the one an accepted definition gives; otherwise it answers every request with an error naming `openmoat mcp accept <name>` and exits 1 ([ADR-049](adr/ADR-049-mcp-startup-gate.md)) |
 | `openmoat policy lint` · `openmoat policy check "<action>" [--kind shell\|fs-read\|fs-write\|net\|fetch\|mcp]` · `openmoat policy compile` | validate a policy · test an action against it · print what the OS layers enforce |
 | `openmoat policy check-diff [--base <rev> [--head <rev>]] [--policy <file>] [--format text\|json\|github]` | check a change before it is merged: from `--base` to `--head` (`HEAD`), or a unified diff on stdin; exit 0 nothing found, 2 something the policy denies, 3 something for review ([MERGE_CHECK.md](MERGE_CHECK.md)); `--provenance review\|info\|off` (default `review`) shows what provenance notes say agents wrote in the change, never changing the exit code |
@@ -1443,7 +1491,7 @@ reads `~`. The file must not exist yet, and an agent cannot run it.
 | `openmoat sandbox show` · `openmoat sandbox sync` | see the host sandbox settings the policy compiles to · write and re-pin them for the agents whose hook is installed |
 | `openmoat bench [--host …] [--hook <command>] [--verbose] [--format json]` | send the bundled MoatBench scenarios to OpenMoat in a throwaway home, or to any hook command with `--hook` and `--host`, and print the scorecard; the scenarios' commands never run ([MOATBENCH.md](MOATBENCH.md#reproduce-it-openmoat-bench)) |
 | `openmoat bench --report [--host …] [--scratch-dir DIR] [--format json\|markdown]` | the proof report: each security promise per layer (policy decision, host model from OpenMoat's golden payloads, real host, OS sandbox, network boundary) as PASS, FAIL or NOT TESTED HERE with the reason; the OS rows run the attacks under `openmoat run` in the throwaway home; exits 1 when an exercised layer fails ([MOATBENCH.md](MOATBENCH.md#proof-report-openmoat-bench---report)) |
-| `openmoat run [--isolate\|--no-isolate] [--write PATH]… [--netns auto\|require] [--scrub-env] [--env NAME]… [--verbose] -- <agent> [args]` | run an agent in a sandbox generated from the policy; `--scrub-env` passes on only an allowlist of your environment for this run, as `sandbox.env: scrubbed` does for every run, and `--env NAME` passes one more inherited variable on when the environment is scrubbed ([POLICY.md §9.6](POLICY.md#96-the-environment-openmoat-run-passes-on-sandboxenv)) (macOS, Linux); on Linux the Isolated tier (bubblewrap: only the project, the read roots and temp) is the default where bubblewrap works, and elsewhere it says why and starts the Lightweight tier, which covers less of the project (without bubblewrap it is granted entry by entry and nothing can be created at its top, ADR-090); `--isolate` refuses instead of falling back, `--no-isolate` starts the Lightweight tier and records it in the audit log ([SANDBOX.md](SANDBOX.md#which-tier-openmoat-run-starts)); `--netns=require` refuses to start on Linux where the agent cannot get a network namespace of its own, instead of restricting its network by port only ([SANDBOX.md](SANDBOX.md)); with `sandbox.strict: true` in your policy it starts only with its whole protection score, refusing (exit 64) before anything starts and stopping the agent when the check after the start cannot confirm a feature ([POLICY.md §9.7](POLICY.md#97-strict-mode-sandboxstrict)) |
+| `openmoat run [--isolate\|--no-isolate] [--write PATH]… [--netns auto\|require] [--scrub-env] [--env NAME]… [--verbose] -- <agent> [args]` | run an agent in a sandbox generated from the policy; `--scrub-env` passes on only an allowlist of your environment for this run, as `sandbox.env: scrubbed` does for every run, and `--env NAME` passes one more inherited variable on when the environment is scrubbed ([POLICY.md §9.6](POLICY.md#96-the-environment-openmoat-run-passes-on-sandboxenv)) (macOS, Linux; on Windows a preview tier that refuses writes outside the project, the temp directory and `--write` paths with a write-restricted token and ends the agent's processes with a job, while reads and the network are not held by the OS and batch files are not started, [SANDBOX.md](SANDBOX.md#openmoat-run-on-windows-preview-writes-only)); on Linux the Isolated tier (bubblewrap: only the project, the read roots and temp) is the default where bubblewrap works, and elsewhere it says why and starts the Lightweight tier, which covers less of the project (without bubblewrap it is granted entry by entry and nothing can be created at its top, ADR-090); `--isolate` refuses instead of falling back, `--no-isolate` starts the Lightweight tier and records it in the audit log ([SANDBOX.md](SANDBOX.md#which-tier-openmoat-run-starts)); `--netns=require` refuses to start on Linux where the agent cannot get a network namespace of its own, instead of restricting its network by port only ([SANDBOX.md](SANDBOX.md)); with `sandbox.strict: true` in your policy it starts only with its whole protection score, refusing (exit 64) before anything starts and stopping the agent when the check after the start cannot confirm a feature ([POLICY.md §9.7](POLICY.md#97-strict-mode-sandboxstrict)) |
 | `openmoat run … --no-snapshot` | take no snapshot of the project before the agent starts and after it exits (recorded in the audit log) |
 | `openmoat run … --print-boundary [--format json] -- <agent>` | print the sandbox boundary this run would start with and start nothing: the tier asked for and the one that starts, each downgrade with why, the network mode, the Landlock ABI, whether tool commands get the relay token, which inherited variables pass and which are withheld (names only, ADR-105), and each restriction's available / configured / applied / tested, and the protection score (`score`: the kernel features in force, weighted to 100, each missing one named, ADR-108); with `sandbox.strict: true` it prints the plan and then refuses, exit 64, when the score is not whole; every run writes the same record, completed by the check after the agent started, to the audit log (`run-boundary`), and on Linux stops an agent whose `/proc` status lacks `NoNewPrivs: 1` or `Seccomp: 2` ([SANDBOX.md](SANDBOX.md#the-runs-boundary-record), [ADR-089](adr/ADR-089-run-boundary-record.md)) |
 | `openmoat snapshot` · `--list [--format json]` · `--prune` | take a snapshot of the project's files · list them with what each left out · remove those past the retention (50 per project, 14 days); refused when an agent started it ([Put the project's files back](#put-the-projects-files-back)) |

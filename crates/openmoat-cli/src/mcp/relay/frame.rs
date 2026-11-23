@@ -48,16 +48,31 @@ fn send<W: Write>(out: &Mutex<Option<W>>, line: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether `out` was closed on purpose (taken), not failed.
+fn closed<W>(out: &Mutex<Option<W>>) -> bool {
+    out.lock().unwrap_or_else(PoisonError::into_inner).is_none()
+}
+
 /// Send what `relay` made of one line where it goes; `note` gets why anything
-/// was dropped.
+/// was dropped. `from_server`: the line came from the server, so anything
+/// for the server is the gateway's own answer to it.
 fn route<S: Write, H: Write>(
     routed: Vec<Routed>,
     server: &Mutex<Option<S>>,
     host: &Mutex<Option<H>>,
     note: &(dyn Fn(&str) + Sync),
+    from_server: bool,
 ) -> Result<()> {
     for routed in routed {
         match routed {
+            // The agent ended the session and the server's input is already
+            // closed: the gateway's answer to a request the server sent after
+            // that (such as a refused sampling request) has nowhere to go and
+            // ends nothing. What the agent sends a closed server stays an
+            // error.
+            Routed::Server(_) if from_server && closed(server) => {
+                note("the agent closed the session: an answer for the MCP server was not sent");
+            }
             Routed::Server(text) => send(server, &text).context("writing to the MCP server")?,
             Routed::Host(text) => send(host, &text).context("writing to the agent")?,
             Routed::Dropped(why) => note(&why),
@@ -76,7 +91,7 @@ pub fn pump_host<S: Write, H: Write>(
     note: &(dyn Fn(&str) + Sync),
 ) -> Result<()> {
     while let Some(line) = read_line(&mut input)? {
-        route(relay.host_line(&line), server, host, note)?;
+        route(relay.host_line(&line), server, host, note, false)?;
     }
     Ok(())
 }
@@ -119,7 +134,7 @@ pub fn pump_server<S: Write, H: Write>(
     note: &(dyn Fn(&str) + Sync),
 ) -> Result<()> {
     while let Some(line) = read_line(&mut input)? {
-        route(relay.server_line(&line), server, host, note)?;
+        route(relay.server_line(&line), server, host, note, true)?;
     }
     Ok(())
 }
