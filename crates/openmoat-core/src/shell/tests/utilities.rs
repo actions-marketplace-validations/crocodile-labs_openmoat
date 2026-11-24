@@ -120,6 +120,103 @@ fn uv_run_classifies_the_wrapped_command() {
 }
 
 #[test]
+fn rtk_and_direnv_exec_classify_the_wrapped_command() {
+    let rtk_atoms = parsed("rtk git reset --hard");
+    assert!(has_shell(&rtk_atoms, "git reset --hard"));
+    assert!(has_shell(&parsed("rtk proxy bash -c 'id'"), "bash -c id"));
+    assert!(has_shell(
+        &parsed("direnv exec . git reset --hard"),
+        "git reset --hard"
+    ));
+    assert!(has_shell(
+        &parsed("rtk direnv exec /p pytest -x"),
+        "pytest -x"
+    ));
+    assert!(has_read(
+        &parsed("rtk cat ~/.ssh/id_rsa"),
+        "/Users/me/.ssh/id_rsa"
+    ));
+    assert!(has_read(
+        &parsed("direnv exec . cat ~/.ssh/id_rsa"),
+        "/Users/me/.ssh/id_rsa"
+    ));
+    // `direnv status` runs no command of its own.
+    assert!(!has_shell(&parsed("direnv status"), "status"));
+}
+
+/// rtk's own subcommands are not programs: `rtk read F` reads `F` (not the
+/// shell builtin `read`), `rtk env` prints the environment, and the ones that
+/// run a command or a `--shell` script are read as that command.
+#[test]
+fn rtk_subcommands_read_and_run_what_rtk_does() {
+    let key = "/Users/me/.ssh/id_rsa";
+    for cmd in [
+        "rtk read ~/.ssh/id_rsa",
+        "rtk -v read -l minimal --max-lines 5 ~/.ssh/id_rsa",
+        "rtk smart ~/.ssh/id_rsa",
+        "rtk diff ~/.ssh/id_rsa /dev/null",
+        "rtk cat ~/.ssh/id_rsa",
+    ] {
+        let atoms = parsed(cmd);
+        assert!(has_read(&atoms, key), "{cmd}: {atoms:?}");
+        assert!(
+            !atoms
+                .iter()
+                .any(|a| matches!(a, AtomicAction::Shell { argv } if argv[0] == "read"))
+        );
+    }
+    assert!(has_shell(&parsed("rtk read src/a.rs"), "cat -- src/a.rs"));
+    // an option's value is no file
+    assert!(!has_read(
+        &parsed("rtk read -l minimal src/a.rs"),
+        "/p/minimal"
+    ));
+    assert!(has_shell(&parsed("rtk env -f AWS"), "printenv"));
+    assert!(has_shell(&parsed("rtk lint src"), "eslint src"));
+    assert!(has_shell(
+        &parsed("rtk grep --max 5 foo src"),
+        "grep foo src"
+    ));
+    assert!(has_shell(&parsed("rtk bypass -- rm -rf x"), "rm -rf x"));
+    assert!(has_shell(&parsed("rtk test ! cargo test"), "cargo test"));
+    assert!(has_shell(
+        &parsed("rtk test -f Cargo.toml"),
+        "test -f Cargo.toml"
+    ));
+    assert!(has_read(
+        &parsed("rtk err --shell sh 'cat ~/.ssh/id_rsa'"),
+        key
+    ));
+    assert!(has_read(
+        &parsed("rtk summary --shell=bash 'cat ~/.ssh/id_rsa'"),
+        key
+    ));
+    assert!(has_read(&parsed("rtk run -c 'cat ~/.ssh/id_rsa'"), key));
+    assert!(has_shell(&parsed("rtk run cargo test"), "cargo test"));
+    // rtk's own state commands run nothing of their name
+    assert!(!has_shell(&parsed("rtk gain --history"), "--history"));
+    assert!(!has_shell(&parsed("rtk init -g"), "-g"));
+}
+
+/// `direnv exec` reads its first word as the directory as written (`--`
+/// included), and a file there is the command itself.
+#[test]
+fn direnv_exec_reads_the_directory_and_runs_the_command() {
+    let atoms = parsed("direnv exec -- /p cat ~/.ssh/id_rsa");
+    assert!(has_read(&atoms, "/Users/me/.ssh/id_rsa"), "{atoms:?}");
+    let atoms = parsed("direnv exec /bin/rm -rf /p/x");
+    assert!(has_shell(&atoms, "/bin/rm -rf /p/x"), "{atoms:?}");
+    let atoms = parsed("direnv exec ../other cargo test");
+    assert!(has_read(&atoms, "/other"), "{atoms:?}");
+    assert!(has_shell(&atoms, "cargo test"));
+    // a plain directory is not also run as a command
+    assert!(!has_shell(
+        &parsed("direnv exec . cargo test"),
+        ". cargo test"
+    ));
+}
+
+#[test]
 fn pkexec_and_runuser_classify_the_wrapped_command() {
     assert!(has_shell(&parsed("pkexec --user me id -u"), "id -u"));
     assert!(has_shell(&parsed("runuser -u me -- id -u"), "id -u"));

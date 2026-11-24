@@ -53,6 +53,12 @@ pub fn unavailable() -> Option<String> {
 /// `moat run` refuses here; a record needs a value.
 pub const NETWORK: NetworkMode = NetworkMode::PortOnly;
 
+/// `moat run` refuses here, so there is no wrapper.
+pub const TOOL_SHELL_GAP: Option<&str> = Some("`openmoat run` has no sandbox on this system");
+
+/// No sandbox here to start servers in.
+pub const MCP_SANDBOX_BY_DEFAULT: bool = false;
+
 /// None: `moat run` refuses here.
 pub fn restrictions(
     _: bool,
@@ -84,6 +90,11 @@ pub fn isolation() -> super::isolation::Offered {
 
 /// None: `moat run` refuses here, so it has no Linux-only gap to name.
 pub fn bubblewrap() -> Option<bool> {
+    None
+}
+
+/// None: no agent sandbox here uses user namespaces.
+pub fn bubblewrap_userns() -> Option<std::result::Result<(), String>> {
     None
 }
 

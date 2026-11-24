@@ -133,6 +133,17 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         dir_variable_is_home: true,
         hook_file: HookLayout::Entries(&hook_file::Named),
         location: Location::Custom(&location::LOCATE),
+        // https://antigravity.google/docs/cli/conversations and
+        // https://antigravity.google/docs/cli/commands/resume name only the
+        // resume cache, `cache/last_conversations.json`, one file for every
+        // conversation.
+        liveness: Some(crate::Liveness {
+            settings: &[],
+            sessions: crate::Sessions::Unknown(
+                "its documentation does not say where `agy` writes a conversation",
+            ),
+            started: None,
+        }),
         ..InstallSpec::BASE
     }),
     // `~/.gemini/config/mcp_config.json` and `<workspace>/.agents/mcp_config.json`
@@ -142,6 +153,7 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         user_reader: &McpServersJson,
         project_files: &[(".agents/mcp_config.json", &McpServersJson)],
         tool_names: &crate::contract::SinglePrefixed,
+        call_ids: None,
         auto_start: None,
     }),
     // `<workspace>/.agents/` holds a project's hooks, MCP servers and plugins.
@@ -184,6 +196,12 @@ pub(crate) static SPEC: HostSpec = HostSpec {
     // readings; exit 2 blocks only under the observed one. A deny the guard
     // could not write still exits 2, the one signal left (`HOST.md`).
     deny_exit: 0,
+    // The project's own files that hold hooks laid out as the hook file
+    // (ADR-109).
+    ledger: crate::Ledger {
+        project_hook_files: &["hooks.json"],
+        ..crate::Ledger::BASE
+    },
     ..HostSpec::BASE
 };
 

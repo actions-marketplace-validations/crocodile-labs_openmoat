@@ -111,6 +111,17 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         hooks: HOOKS,
         hook_file: HookLayout::Entries(&hook_file::Goose),
         location: Location::Custom(&location::LOCATE),
+        // goose 1.10.0 and later keep every session in
+        // `<data dir>/sessions/sessions.db`, not a file each
+        // (https://block.github.io/goose/docs/guides/sessions/session-management).
+        liveness: Some(crate::Liveness {
+            settings: &[],
+            sessions: crate::Sessions::Unknown(
+                "goose keeps its sessions in one database in its data directory, which \
+                 commands that run no session open too",
+            ),
+            started: None,
+        }),
         ..InstallSpec::BASE
     }),
     // `extensions` in `config.yaml` (`config/extensions.rs`); goose reads no
@@ -120,6 +131,7 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         user_reader: &mcp::Extensions,
         project_files: &[],
         tool_names: &mcp::GooseNames,
+        call_ids: None,
         auto_start: None,
     }),
     // `enabledPlugins` and `disabledPlugins` in `.config/goose/settings.json`

@@ -86,7 +86,13 @@ pub(super) fn record(host: Host, recorded: Recorded<'_>) -> Result<()> {
         Some(r) => drift::noted(&store, &r.session_id, decision, drifted)?,
         None => None,
     };
+    let told = decision;
     let decision = noted.as_ref().unwrap_or(decision);
+    // A call held for a person's review records the exact text the host's
+    // prompt shows with it (OWASP ASI09): what was shown, beside what ran
+    // (`shown.rs`).
+    let shown = request.and_then(|r| super::shown::with_shown(host, &r.event, told, decision));
+    let decision = shown.as_ref().unwrap_or(decision);
     let latency_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
     let event = NewEvent {
         host: host.id(),
@@ -106,20 +112,21 @@ pub(super) fn record(host: Host, recorded: Recorded<'_>) -> Result<()> {
         {
             provenance.write(&store, id, host.id(), &r.session_id)?;
         }
-        // An MCP call the host may now send: `openmoat mcp proxy` passes on only
-        // a call that matches such a decision (ADR-045). Like the row, a decision
-        // that cannot be written fails the call.
-        if let Some(r) = request {
-            mcp_ticket(&store, id, host, r, decision, relayed)?;
-        }
         // Under `moat run`, the run's proxy applies this session's taint too
         // (ADR-027); a link that cannot be written fails the call like the row.
         let run = std::env::var(taint::run::RUN_SESSION_ENV).ok();
         if let (Some(run), Some(r)) = (taint::run::run_session(run.as_deref()), request) {
             taint::run::link(&store, run, host, &r.session_id)?;
         }
+        // Publish the MCP ticket last. Any earlier write failure makes the
+        // guard answer deny, so it must leave no ticket the relay could take.
+        if let Some(r) = request {
+            mcp_ticket(&store, id, host, r, decision, relayed)?;
+        }
         Ok(())
     })?;
+    // Every thousandth event, a signed checkpoint (ADR-110); best effort.
+    crate::audit_signing::periodic(&home, &store, id);
     // A deferred call is the agent's to decide; OpenMoat stays quiet about it.
     if !matches!(decision.verdict, Verdict::Allow | Verdict::Defer) {
         eprintln!("moat: trace {id}  (openmoat show {id})");

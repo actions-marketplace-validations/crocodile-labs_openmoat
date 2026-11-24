@@ -20,8 +20,11 @@ use crate::common::{OK, Sandbox, output, stdout, text};
 use crate::hosts::dir_of;
 use openmoat_hosts::Host;
 
+mod codex;
 mod flow;
 mod injected;
+mod modern;
+mod shutdown;
 
 const FIXTURES: &str = include_str!("mcp_gateway/fixtures.json");
 
@@ -36,17 +39,23 @@ fn server_script() -> PathBuf {
 struct Gateway {
     sb: Sandbox,
     record: PathBuf,
+    host: Option<&'static str>,
 }
 
 impl Gateway {
     fn new() -> Self {
+        Self::for_host(None)
+    }
+
+    fn for_host(host: Option<&'static str>) -> Self {
         let sb = Sandbox::installed(&[&dir_of(Host::ClaudeCode)]);
         let record = sb.home.join("record.jsonl");
-        let gateway = Self { sb, record };
+        let gateway = Self { sb, record, host };
         // `openmoat mcp proxy` starts only a definition a person accepted
         // (ADR-049): one per mode, each starting the proxy as `docs`.
         for mode in [
-            "answer", "silent", "rug", "inject", "fail", "instruct", "sample",
+            "answer", "silent", "rug", "inject", "fail", "instruct", "sample", "stubborn",
+            "modern", "imposter", "mrtr",
         ] {
             let line = gateway.proxy_line(mode);
             let args: Vec<&str> = line.iter().map(String::as_str).collect();
@@ -70,9 +79,12 @@ impl Gateway {
     fn proxy_line(&self, mode: &str) -> Vec<String> {
         let script = server_script().to_string_lossy().into_owned();
         let record = self.record.to_string_lossy().into_owned();
-        ["--server", "docs", "--", "python3", &script, &record, mode]
-            .map(str::to_owned)
-            .to_vec()
+        let mut args = vec!["--server", "docs"];
+        if let Some(host) = self.host {
+            args.extend(["--host", host]);
+        }
+        args.extend(["--", "python3", &script, &record, mode]);
+        args.into_iter().map(str::to_owned).collect()
     }
 
     fn proxy(&self, mode: &str) -> std::process::Command {

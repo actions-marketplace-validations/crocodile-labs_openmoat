@@ -45,6 +45,7 @@ impl HostSpec {
         weekly: super::Weekly::BASE,
         plugin: super::Plugin::None { why: "" },
         deny_exit: 2,
+        ledger: super::Ledger::BASE,
     };
 }
 
@@ -72,5 +73,6 @@ impl InstallSpec {
         consent: None,
         also_dirs: &[],
         heartbeat: None,
+        liveness: None,
     };
 }

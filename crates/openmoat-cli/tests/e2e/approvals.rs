@@ -212,9 +212,15 @@ fn permanent_overlay_rules_merge_into_the_policy() {
         "policy.d/approved.yaml",
         "version: 1\nallow:\n  - id: evil\n    shell: ['*']\n",
     );
-    assert_eq!(
-        sb.moat_as_person(&["init", "--yes"]).status.code(),
-        Some(OK)
+    let init = sb.moat_as_person(&["init", "--yes"]);
+    assert_eq!(init.status.code(), Some(OK), "{}", text(&init));
+    // The policy does not load: init finishes and names why. (The hook
+    // ledger reads the policy only when a hook entry changed, so it says
+    // nothing here; ADR-109.)
+    assert!(
+        text(&init).contains("must have an id starting with `approved-`"),
+        "{}",
+        text(&init)
     );
     let d = decide(&sb, "any", "terraform apply");
     assert_eq!(

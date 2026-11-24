@@ -35,12 +35,15 @@ fn port_only() -> EffectiveBoundary {
             Restriction::planned(LandlockTcpPort, true, true),
             Restriction::planned(LandlockScopes, false, true),
             Restriction::planned(LandlockResolveUnix, false, true),
+            Restriction::planned(LandlockUdp, false, true),
             Restriction::planned(Seccomp, true, true),
             Restriction::planned(NoNewPrivs, true, true),
             Restriction::planned(NetworkNamespace, false, false),
             Restriction::planned(IsolatedView, false, false),
         ],
         launch: None,
+        environment: None,
+        score: None,
     }
 }
 
@@ -56,6 +59,7 @@ fn verified(abi: u32) -> LaunchCheck {
         proc_seccomp_filter: Some(true),
         in_bubblewrap: false,
         failure: None,
+        ..LaunchCheck::default()
     }
 }
 
@@ -183,6 +187,30 @@ fn the_json_form_names_the_tier_and_the_downgrade() {
     assert_eq!(kept["why"], "no wrapper");
 }
 
+/// A record written before the environment part existed still reads, and
+/// one with it keeps names only through a round trip.
+#[test]
+fn the_environment_part_is_optional_and_round_trips() {
+    let mut json = serde_json::to_value(port_only()).unwrap();
+    assert!(json.get("environment").is_none(), "{json}");
+    json.as_object_mut().unwrap().remove("environment");
+    let old: EffectiveBoundary = serde_json::from_value(json).unwrap();
+    assert_eq!(old.environment, None);
+    let mut record = port_only();
+    record.environment = Some(RunEnvironment {
+        scrubbed: true,
+        why: "`sandbox.env: scrubbed` in your policy".to_owned(),
+        passed: vec!["HOME".to_owned(), "PATH".to_owned()],
+        withheld: vec!["AWS_SECRET_ACCESS_KEY".to_owned()],
+        brokered: vec!["GITHUB_TOKEN".to_owned()],
+    });
+    let json = serde_json::to_value(&record).unwrap();
+    assert_eq!(json["environment"]["scrubbed"], true);
+    assert_eq!(json["environment"]["withheld"][0], "AWS_SECRET_ACCESS_KEY");
+    let back: EffectiveBoundary = serde_json::from_value(json).unwrap();
+    assert_eq!(back, record);
+}
+
 #[test]
 fn every_mechanism_id_matches_its_json_name() {
     use Mechanism::*;
@@ -192,6 +220,7 @@ fn every_mechanism_id_matches_its_json_name() {
         LandlockTcpPort,
         LandlockScopes,
         LandlockResolveUnix,
+        LandlockUdp,
         Seccomp,
         NoNewPrivs,
         NetworkNamespace,
@@ -243,4 +272,173 @@ fn unknown_is_missing_only_after_the_start() {
     assert!(planned.missing(true));
     let off = Restriction::planned(Mechanism::NetworkNamespace, false, false);
     assert!(!off.missing(true));
+}
+
+/// Each platform's weights add up to 100, and no mechanism is weighted twice.
+#[test]
+fn every_platforms_weights_add_up_to_100() {
+    for os in ["linux", "macos", "windows"] {
+        let table = weights(os);
+        assert_eq!(table.iter().map(|(_, w)| w).sum::<u32>(), 100, "{os}");
+        for (i, (m, _)) in table.iter().enumerate() {
+            assert!(table[i + 1..].iter().all(|(n, _)| n != m), "{os}: {m:?}");
+        }
+    }
+    assert_eq!(weights("freebsd"), []);
+}
+
+/// A Windows run (ADR-115) with its token and job confirmed scores 55: the
+/// network filter and read denial are weighted, not built, and named so.
+#[test]
+fn a_confirmed_windows_run_scores_55_and_names_network_and_reads() {
+    let mut record = port_only();
+    record.os = "windows".to_owned();
+    record.landlock = None;
+    record.network.mode = NetworkMode::ProxyVariables;
+    record.restrictions = vec![
+        Restriction::planned(Mechanism::RestrictedToken, true, true),
+        Restriction::planned(Mechanism::JobObject, true, true),
+        Restriction::planned(Mechanism::WfpNetwork, false, false),
+        Restriction::planned(Mechanism::WindowsReadDeny, false, false),
+    ];
+    record.rescore();
+    assert_eq!(record.score.as_ref().unwrap().points, 55);
+    record.launched(LaunchCheck {
+        restricted_token: Some(true),
+        agent_token_restricted: Some(true),
+        job_object: Some(true),
+        agent_in_job: Some(true),
+        ..LaunchCheck::default()
+    });
+    assert!(record.missing().is_empty(), "{:?}", record.missing());
+    let score = record.score.clone().unwrap();
+    assert_eq!(score.points, 55, "{score:?}");
+    assert!(!score.complete());
+    let line = score.line();
+    assert!(
+        line.contains("wfp_network (not in OpenMoat's Windows tier yet"),
+        "{line}"
+    );
+    assert!(
+        line.contains("windows_read_deny (not in OpenMoat's Windows tier yet"),
+        "{line}"
+    );
+
+    // A token the agent's own process does not show is missing: the run stops.
+    record.launched(LaunchCheck {
+        restricted_token: Some(true),
+        agent_token_restricted: Some(false),
+        job_object: Some(true),
+        agent_in_job: Some(true),
+        ..LaunchCheck::default()
+    });
+    assert_eq!(record.missing(), ["restricted_token"]);
+    assert_eq!(record.score.unwrap().points, 10);
+}
+
+/// The port-only plan on ABI 4: files, the TCP port, seccomp and
+/// `no_new_privs` in force; every newer step, the namespace and the view
+/// missing, each named with what brings it.
+#[test]
+fn a_port_only_plan_on_abi_4_scores_55_and_names_what_is_missing() {
+    let mut record = port_only();
+    record.rescore();
+    let score = record.score.clone().unwrap();
+    assert_eq!(score.points, 55, "{score:?}");
+    assert!(!score.complete());
+    let line = score.line();
+    for expected in [
+        "55/100",
+        "landlock_udp (not on this system: needs Landlock ABI 10, Linux 7.2",
+        "landlock_scopes (not on this system: needs Landlock ABI 6",
+        "network_namespace (not on this system: needs bubblewrap",
+        "isolated_view (not on this system: needs the Isolated tier",
+    ] {
+        assert!(line.contains(expected), "{expected}: {line}");
+    }
+    assert!(!line.contains("landlock_filesystem"), "{line}");
+}
+
+/// Every feature in force, confirmed after the start: 100, complete.
+#[test]
+fn a_full_isolated_run_on_abi_10_scores_100() {
+    let mut record = port_only();
+    for r in &mut record.restrictions {
+        r.available = true;
+        r.configured = true;
+    }
+    let mut check = verified(10);
+    check.landlock = Some(Enforcement::Full);
+    check.in_bubblewrap = true;
+    record.launched(check);
+    let score = record.score.clone().unwrap();
+    assert_eq!(score.points, 100, "{:?}", score.missing());
+    assert!(score.complete());
+    assert!(
+        score.line().contains("every kernel feature"),
+        "{}",
+        score.line()
+    );
+}
+
+/// After the start, a best-effort step that cannot be confirmed (a partly
+/// enforced ruleset) is not in force for the score, so strict refuses it,
+/// while `missing()` (which stops every run) still lets it pass.
+#[test]
+fn an_unconfirmed_step_after_the_start_is_not_in_force() {
+    let mut record = port_only();
+    for r in &mut record.restrictions {
+        r.available |= r.name == Mechanism::LandlockScopes;
+    }
+    record.launched(verified(8));
+    assert!(record.missing().is_empty(), "{:?}", record.missing());
+    let score = record.score.clone().unwrap();
+    let scopes = score
+        .items
+        .iter()
+        .find(|i| i.name == Mechanism::LandlockScopes)
+        .unwrap();
+    assert!(!scopes.in_force);
+    assert_eq!(
+        scopes.missing.as_deref(),
+        Some("not confirmed in force after the start")
+    );
+}
+
+/// A failed start scores only what was never part of the plan as missing
+/// for its own reason; everything else is missing because the start failed.
+#[test]
+fn a_failed_start_has_nothing_in_force() {
+    let mut record = port_only();
+    record.launched(LaunchCheck {
+        failure: Some("stopped".to_owned()),
+        ..LaunchCheck::default()
+    });
+    assert_eq!(record.score.unwrap().points, 0);
+}
+
+/// A platform without a sandbox scores 0 and is never complete.
+#[test]
+fn no_sandbox_scores_0() {
+    let mut record = port_only();
+    record.os = "freebsd".to_owned();
+    record.rescore();
+    let score = record.score.unwrap();
+    assert_eq!(score.points, 0);
+    assert!(!score.complete());
+    assert!(score.line().contains("no sandbox"), "{}", score.line());
+}
+
+/// The score is part of the JSON form, and a record without one still reads.
+#[test]
+fn the_score_round_trips_and_is_optional() {
+    let mut record = port_only();
+    record.rescore();
+    let json = serde_json::to_value(&record).unwrap();
+    assert_eq!(json["score"]["points"], 55);
+    assert_eq!(json["score"]["items"][0]["name"], "landlock_filesystem");
+    let back: EffectiveBoundary = serde_json::from_value(json).unwrap();
+    assert_eq!(back, record);
+    let old = serde_json::to_value(port_only()).unwrap();
+    assert!(old.get("score").is_none(), "{old}");
 }

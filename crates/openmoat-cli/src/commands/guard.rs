@@ -41,6 +41,7 @@ mod record;
 mod relayed;
 mod required;
 mod session_start;
+mod shown;
 mod unattended;
 mod unseen;
 
@@ -398,8 +399,12 @@ fn evaluate(
         .context("resolving working directory")?;
     hangs::enter(Phase::Context);
     let ctx = context::eval_context(&home, Some(&cwd), None)?;
-    let policy = crate::repo::effective_policy(&home, &ctx)?;
-    out.known = secrets::known(&policy.secrets, &ctx.home)?;
+    // The decoy keys a person had `init` plant (ADR-106): their paths are the
+    // first deny rule, their values masked and refused below.
+    let decoys = crate::canary::Record::load(&home)?.decoys();
+    let mut policy = crate::repo::effective_policy(&home, &ctx)?;
+    decoys.guard(&mut policy);
+    out.known = secrets::known_with(&policy.secrets, &ctx.home, &decoys.values)?;
     out.unattended = policy.unattended();
     // An agent below the level the policy requires gets no decision but this
     // deny, on every call (ADR-064); nothing to read when none is required.
@@ -429,8 +434,14 @@ fn evaluate(
     // (ADR-057); before the grant, so a person's grant for this exact call
     // answers it.
     let session_of = (host, request.session_id.as_str());
-    let mut decision =
+    let decision =
         taint::injected::checked(&home, &store, session_of, &compiled, action, decision)?;
+    // The policy's argument conditions (ADR-113): before the grant, as any
+    // rule's review is.
+    let arguments = crate::arguments::of_mcp(request.mcp_arguments.as_deref());
+    let mut decision = taint::injected::with_lookup(&home, &store, session_of, |seen| {
+        compiled.with_arguments(decision, action, &FsPathResolver, &arguments, seen)
+    })?;
     // A grant a person made with `moat allow` turns a `review` or a `defer` into an
     // `allow` (Cursor's file tools get a review for a defer, so they need it); a deny stays a deny.
     if matches!(decision.verdict, Verdict::Review | Verdict::Defer)
@@ -510,6 +521,9 @@ fn evaluate(
         &session.staging,
         &taint::is_dir,
     );
+    // Private data, untrusted content and a way out in one session (ADR-113);
+    // after the grant, which did not see the session's reads.
+    let decision = compiled.with_trifecta(decision, action, &FsPathResolver, &session.taint);
     // Code this session wrote, run with no OS sandbox below the hook; only
     // tightens (ADR-039). Part of the taint phase: it reads the audit log.
     let code = session_code::Call {
@@ -547,6 +561,13 @@ fn evaluate(
     let tainted = session.taint.untrusted.is_some() || !session.taint.secrets.is_empty();
     let pushes = compiled.pushes(action);
     let decision = push::check(&pushes, &snapshot, &out.known, tainted, decision);
+    // A hook, plugin hook or git program this agent loads that no person
+    // accepted since it was added or changed; only tightens, and after the
+    // grant, which cannot answer it (ADR-109).
+    let hold = crate::hook_ledger::violation(&home, &verified.lock, host, Some(&cwd), &compiled);
+    let decision = crate::hook_ledger::tightened(decision, hold);
+    // A decoy's value anywhere in the call, content and arguments included.
+    let decision = decoys.checked_text(payload, decoys.checked(action, decision));
     out.titles = notice::Titles::of(compiled.policy(), &decision);
     Ok((Some(request), decision))
 }

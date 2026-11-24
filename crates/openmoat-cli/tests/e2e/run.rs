@@ -10,6 +10,9 @@ use crate::common::{OK, Sandbox, USAGE, output, stderr, text};
 /// The run's boundary record: `--print-boundary` and one row per run (ADR-089).
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod boundary;
+/// The egress bypasses other sandboxes document, tried from inside (ADR-108).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod bypass;
 /// Files open in the launcher stay out of the sandbox (ADR-088).
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod inherited_fds;
@@ -39,6 +42,12 @@ mod mcp_boundary;
 /// (ADR-090).
 #[cfg(target_os = "linux")]
 mod project_paths;
+/// The protection score and `sandbox.strict: true` (ADR-108).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod score;
+/// The scrubbed environment: only the allowlist reaches the program (ADR-105).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+mod scrubbed_env;
 /// Linux without bubblewrap: the port-only path a stock system takes.
 #[cfg(target_os = "linux")]
 mod stock_linux;
@@ -52,6 +61,9 @@ mod temp_dirs;
 /// is shown and on record (ADR-082).
 #[cfg(target_os = "linux")]
 mod unix_sockets;
+/// Windows: the write-restricted token and the job object (ADR-115).
+#[cfg(windows)]
+mod windows_tier;
 
 /// Set for a stock-Linux run, on a machine that has no bubblewrap and keeps
 /// unprivileged user namespaces restricted, as a stock Ubuntu does: there
@@ -215,7 +227,7 @@ pub(crate) fn lightweight_notice(out: &Output) -> bool {
     said.contains("as under `--isolate`") || said.contains("granted entry by entry")
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 #[test]
 fn refuses_where_no_sandbox_can_be_generated() {
     let (sb, project) = installed_with_secret();
@@ -384,7 +396,9 @@ pub mod confined {
     }
 
     /// The proxy reads a brokered secret from `moat run`'s environment; the agent
-    /// and its commands never see that variable, only the placeholder.
+    /// and its commands never see its value: the variable holds the
+    /// placeholder (ADR-105), which the proxy swaps for the value on the
+    /// secret's own host only.
     #[test]
     fn an_env_brokered_secret_is_not_in_the_agents_environment() {
         let (sb, project) = installed_with_secret();
@@ -405,7 +419,10 @@ pub mod confined {
             return;
         }
         let shown = text(&out);
-        assert!(stdout(&out).contains("token=unset"), "{shown}");
+        assert!(
+            stdout(&out).contains("token=moat-secret:gh:placeholder"),
+            "{shown}"
+        );
         assert!(!shown.contains(value), "{shown}");
     }
 

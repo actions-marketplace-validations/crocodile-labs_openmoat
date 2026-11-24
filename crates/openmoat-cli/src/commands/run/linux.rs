@@ -308,6 +308,13 @@ pub fn bubblewrap() -> Option<bool> {
     Some(isolate::system_bwrap().is_some())
 }
 
+/// Whether the system's bubblewrap creates its namespaces, a user namespace
+/// among them (`isolate::probe`); `None` where it is not installed.
+pub fn bubblewrap_userns() -> Option<std::result::Result<(), String>> {
+    isolate::system_bwrap()?;
+    Some(isolate::probe().map(|_| ()))
+}
+
 /// What `moat doctor` says where `moat run --no-isolate`, or a plain `moat run`
 /// that cannot isolate, would grant the project of `ctx` entry by entry (no
 /// network namespace, ADR-090): the paths the policy denies there that would
@@ -327,6 +334,12 @@ pub fn project_open(policy: &Policy, ctx: &EvalContext) -> Option<String> {
 
 pub use isolate::{inside, isolate};
 pub use launch::{NETWORK, restrictions};
+
+/// None: the tool-shell wrapper (ADR-075) works here.
+pub const TOOL_SHELL_GAP: Option<&str> = None;
+
+/// `openmoat mcp wrap` starts servers under `openmoat run` by default here.
+pub const MCP_SANDBOX_BY_DEFAULT: bool = true;
 
 /// The terminals this process's standard input, output and error are on, as
 /// `/proc` names them (`/dev/pts/3`, `/dev/tty1`); not `/dev/tty` itself.
@@ -402,11 +415,13 @@ fn restricted(rules: &Rules, report: Report, command: Command) -> Result<Confine
             .handle_access(AccessNet::from_all(ABI_REQUIRED))?
             // Where the kernel has them, beside the seccomp filter (ADR-082):
             // abstract Unix sockets and signals outside the sandbox (ABI 6),
-            // and pathname Unix sockets made outside it (ABI 9), which no
-            // rule below grants.
+            // pathname Unix sockets made outside it (ABI 9), and every UDP
+            // bind, connect and send (ABI 10, ADR-108), which no rule below
+            // grants: the proxy is TCP, so no UDP is ever allowed.
             .set_compatibility(CompatLevel::BestEffort)
             .scope(Scope::from_all(ABI::V6))?
             .handle_access(AccessFs::ResolveUnix)?
+            .handle_access(AccessNet::BindUdp | AccessNet::ConnectSendUdp)?
             .create()?
             .add_rules(path_beneath_rules(
                 &rules.read,

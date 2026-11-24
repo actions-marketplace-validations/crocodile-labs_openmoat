@@ -135,6 +135,27 @@ fn signed_repository_policies_are_trusted_only_when_asked_for() {
     assert!(Policy::parse("version: 1\nrequire_signed_repo_policy: 1\n").is_err());
 }
 
+/// `hooks.foreign` (ADR-109): a new or changed foreign hook warns unless the
+/// person's policy says `hold`; a repository policy cannot say it.
+#[test]
+fn foreign_hooks_warn_unless_the_persons_policy_holds_them() {
+    assert_eq!(
+        Policy::parse("version: 1\n").unwrap().foreign_hooks(),
+        ForeignHooks::Warn
+    );
+    let hold = Policy::parse("version: 1\nhooks:\n  foreign: hold\n").unwrap();
+    assert_eq!(hold.foreign_hooks(), ForeignHooks::Hold);
+    assert_eq!(
+        Policy::parse("version: 1\nhooks: {}\n")
+            .unwrap()
+            .foreign_hooks(),
+        ForeignHooks::Warn
+    );
+    assert!(Policy::parse("version: 1\nhooks:\n  foreign: review\n").is_err());
+    assert!(Policy::parse("version: 1\nhooks:\n  other: hold\n").is_err());
+    assert!(crate::RepoPolicy::parse("version: 1\nhooks:\n  foreign: hold\n").is_err());
+}
+
 #[test]
 fn mcp_first_sight_is_held_unless_the_policy_trusts_it() {
     assert!(
@@ -217,6 +238,47 @@ fn the_project_top_is_protected_unless_the_policy_says_writable() {
     }
     let written = crate::yaml::to_string(&SandboxSettings::default()).unwrap();
     assert!(!written.contains("project_top"), "{written}");
+}
+
+/// `sandbox.strict` (ADR-108): off unless the person's own policy says
+/// `true`; a value that is no boolean is an error, and the default policy and
+/// one written back out leave it unsaid.
+#[test]
+fn strict_is_off_unless_the_policy_says_true() {
+    let strict = |yaml: &str| Policy::parse(yaml).map(|p| p.sandbox_strict());
+    assert!(!strict("version: 1\n").unwrap());
+    assert!(!strict(crate::DEFAULT_POLICY).unwrap());
+    assert!(!strict("version: 1\nsandbox: { strict: false }\n").unwrap());
+    assert!(strict("version: 1\nsandbox: { strict: true }\n").unwrap());
+    assert!(strict("version: 1\nsandbox: { strict: always }\n").is_err());
+    let written = crate::yaml::to_string(&SandboxSettings::default()).unwrap();
+    assert!(!written.contains("strict"), "{written}");
+}
+
+/// `sandbox.env` (ADR-105): unsaid unless the person's own policy says
+/// `scrubbed` or `inherited`; any other value is an error, the default policy
+/// leaves it unsaid, and so does one written back out.
+#[test]
+fn the_run_environment_is_unsaid_unless_the_policy_names_one() {
+    let env = |yaml: &str| Policy::parse(yaml).map(|p| p.run_env());
+    assert_eq!(env("version: 1\n").unwrap(), None);
+    assert_eq!(env(crate::DEFAULT_POLICY).unwrap(), None);
+    assert_eq!(
+        env("version: 1\nsandbox: { env: scrubbed }\n").unwrap(),
+        Some(RunEnv::Scrubbed)
+    );
+    assert_eq!(
+        env("version: 1\nsandbox: { env: inherited }\n").unwrap(),
+        Some(RunEnv::Inherited)
+    );
+    for bad in ["clean", "true", "Scrubbed", "[PATH]"] {
+        assert!(
+            env(&format!("version: 1\nsandbox: {{ env: {bad} }}\n")).is_err(),
+            "{bad}"
+        );
+    }
+    let written = crate::yaml::to_string(&SandboxSettings::default()).unwrap();
+    assert!(!written.contains("env"), "{written}");
 }
 
 /// `sandbox.project_hook_off` (ADR-098): `openmoat run` refuses unless the

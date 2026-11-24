@@ -1,7 +1,7 @@
 //! `moat doctor`: verify the installation and, from a terminal, accept changes.
 
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Result, bail};
 use openmoat_audit::{ChainReport, Store};
@@ -10,21 +10,23 @@ use openmoat_core::Policy;
 use crate::cli::{DoctorArgs, Format};
 use crate::exit::Code;
 use crate::home::Home;
-use crate::integrity::{self, HookPinGap, HookPins, Lock};
+use crate::integrity::{self, HookPins, Lock};
 use crate::protection;
 use crate::render::Deferred;
 use crate::report::{Mark, Row};
-use crate::sandbox::landlock::abi::{self, Kernel};
 use human::Place;
 use rows::Report;
 
 mod bundle;
+mod foreign_hooks;
 mod hooks;
 mod human;
 mod json;
+mod kernel;
 mod mcp;
 mod rows;
 mod sandboxes;
+mod signing;
 mod state_files;
 mod warnings;
 
@@ -43,6 +45,8 @@ enum Area {
     Audit,
     Service,
     Mcp,
+    /// The foreign-hook ledger (ADR-109).
+    Hooks,
 }
 
 /// The `moat doctor` line for the proxy user service (`moat proxy install`,
@@ -91,8 +95,9 @@ pub fn run(args: &DoctorArgs) -> Result<Code> {
     state_files::rows(&mut report, &home);
     let hook_files = hooks::hooks(&mut report, &home, &binary)?;
     if let Some(lock) = &lock {
-        hook_pins(&mut report, lock, &home, &hook_files);
+        hooks::pins(&mut report, lock, &home, &hook_files);
         mcp::lines(&mut report, &home, lock, &binary);
+        foreign_hooks::lines(&mut report, &home, lock, &binary);
     }
     if let Some(policy) = &policy {
         sandboxes::sandboxes(
@@ -154,6 +159,14 @@ pub fn run(args: &DoctorArgs) -> Result<Code> {
             crate::managed::Row::Warn(text) => report.warn(&text),
         }
     }
+    // The opt-in choices of `init` (ADR-106): a decoy touched, sandboxed start.
+    for row in crate::opt_in::rows(&home, crate::time::now_ms()) {
+        if row.attention {
+            report.warn(&row.doctor_line());
+        } else {
+            report.note(&row.doctor_line());
+        }
+    }
     // Run by the agent's own git when a session starts, before any hook.
     for warning in crate::project_settings::git_config::warnings_here() {
         report.warn(&format!("{:<16} git config {warning}", "Repository"));
@@ -172,13 +185,11 @@ pub fn run(args: &DoctorArgs) -> Result<Code> {
         Some((false, text)) => report.line(Area::Sandbox, true, text),
         None => {}
     }
-    if let Some(kernel) = super::run::landlock() {
-        landlock(&mut report, &kernel, args.verbose);
-    }
+    kernel::rows(&mut report, args.verbose);
     if let Some(policy) = &policy {
         let hosts = crate::mcp::set_up_hosts(&home, &binary);
         let names = super::run::withheld_names(policy, &hosts);
-        let line = super::run::withheld_line(&names, boundary.is_some());
+        let line = super::run::withheld_line(&names, policy, strict);
         report.note_at(&line, Place::OpenMoat);
     }
     match home
@@ -218,6 +229,7 @@ pub fn run(args: &DoctorArgs) -> Result<Code> {
         );
         report.note_at(&text, Place::OpenMoat);
     }
+    signing::lines(&mut report, &home);
     if !as_json && args.bundle.is_none() {
         let agents = std::mem::take(&mut report.agents);
         human::sections(&mut report, &agents, args.verbose);
@@ -233,23 +245,6 @@ pub fn run(args: &DoctorArgs) -> Result<Code> {
         return json::finish(&report.rows, report.problems.len());
     }
     finish(report, args.verbose)
-}
-
-/// The kernel's Landlock ABI and what `openmoat run` applies from it (ADR-082):
-/// a warning below the floor, where `openmoat run` refuses; each step of the
-/// ladder with `verbose`.
-fn landlock(report: &mut Report, kernel: &Kernel, verbose: bool) {
-    let text = format!("landlock         {}", abi::summary(kernel));
-    if kernel.meets_floor() {
-        report.line(Area::Sandbox, true, text);
-    } else {
-        report.warn(&text);
-    }
-    if verbose {
-        for line in abi::lines(kernel) {
-            report.human(Place::Details, Row::new(Mark::Info, "Landlock", line));
-        }
-    }
 }
 
 /// Each agent's protection level, its limit and its known gaps; the text
@@ -416,31 +411,6 @@ fn environment(report: &mut Report, home: &Home) {
     }
 }
 
-/// Installed hook files the lock does not pin, and pinned ones this shell
-/// does not use.
-fn hook_pins(report: &mut Report, lock: &Lock, home: &Home, hook_files: &[PathBuf]) {
-    let gap = HookPinGap::new(lock, home, hook_files);
-    for path in gap.unpinned {
-        report.line(
-            Area::Hook,
-            false,
-            format!(
-                "hook file        {} is not pinned by the lock; run `openmoat init` to pin it",
-                path.display()
-            ),
-        );
-    }
-    for path in gap.elsewhere {
-        let (path, moved) = (path.display(), HookPinGap::moved_by());
-        report.note_at(
-            &format!(
-                "hook file        {path} is pinned but not this shell's ({moved}); re-pinning keeps it"
-            ),
-            Place::OpenMoat,
-        );
-    }
-}
-
 /// `--accept`: re-pin from a terminal when the policy lints and the lock is
 /// not intact, clearing the problems a re-pin fixes.
 fn accept(
@@ -467,6 +437,7 @@ fn accept(
         // a person has seen each change.
         if home.lock_path().is_file() {
             mcp::accept(report, home, binary)?;
+            foreign_hooks::accept(report, home, binary)?;
         }
         writeln!(report.out, "nothing else to accept: lock is intact")?;
         return Ok(());
@@ -480,7 +451,8 @@ fn accept(
     report
         .problems
         .retain(|(area, _)| !matches!(area, Area::Lock | Area::Binary));
-    mcp::accept(report, home, binary)
+    mcp::accept(report, home, binary)?;
+    foreign_hooks::accept(report, home, binary)
 }
 
 /// The closing line, the output and the exit code.

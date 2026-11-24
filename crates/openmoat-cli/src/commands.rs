@@ -4,11 +4,12 @@ mod allow;
 mod allowed;
 mod approvals;
 mod audit;
-mod bench;
+pub(crate) mod bench;
 mod demo;
 mod doctor;
 mod edit;
 pub(crate) mod guard;
+mod hooks;
 mod init;
 mod mcp;
 mod miswired_hook;
@@ -36,8 +37,8 @@ mod why;
 use anyhow::Result;
 
 use crate::cli::{
-    ApprovalsCommand, AuditCommand, CaCommand, Cli, Command, DeliverCommand, McpCommand,
-    PolicyCommand, ProxyCommand, SandboxCommand, SecretCommand,
+    ApprovalsCommand, AuditCommand, CaCommand, Cli, Command, DeliverCommand, HooksCommand,
+    McpCommand, PolicyCommand, ProxyCommand, SandboxCommand, SecretCommand,
 };
 use crate::exit::Code;
 
@@ -100,6 +101,7 @@ pub fn run(cli: Cli) -> Result<Code> {
             AuditCommand::Evidence(args) => audit::evidence(&args),
             AuditCommand::Stats(args) => audit::stats(&args),
             AuditCommand::Anchor(args) => audit::anchor(&args),
+            AuditCommand::Checkpoint(args) => audit::checkpoint(&args),
             AuditCommand::Deliver { command } => match command {
                 DeliverCommand::Status(args) => audit::deliver::status(&args),
                 DeliverCommand::Test(args) => audit::deliver::test(&args),
@@ -114,6 +116,7 @@ pub fn run(cli: Cli) -> Result<Code> {
             PolicyCommand::Lint(args) => policy::lint(&args),
             PolicyCommand::Check(args) => policy::check(&args),
             PolicyCommand::CheckDiff(args) => policy::check_diff(&args),
+            PolicyCommand::Diff(args) => policy::diff(&args),
             PolicyCommand::Compile(args) => policy::compile(&args),
             PolicyCommand::Upgrade(args) => policy::upgrade(&args),
             PolicyCommand::Migrate(args) => policy::migrate(&args),
@@ -132,6 +135,10 @@ pub fn run(cli: Cli) -> Result<Code> {
             McpCommand::Proxy(args) => mcp::proxy(&args),
             McpCommand::Wrap(args) => mcp::wrap(&args),
             McpCommand::Unwrap(args) => mcp::unwrap(&args),
+        },
+        Command::Hooks { command } => match command {
+            HooksCommand::List => hooks::list(),
+            HooksCommand::Accept => hooks::accept(),
         },
     }
 }
@@ -154,9 +161,23 @@ pub fn run_port_only_network() -> Option<String> {
     run::port_only_network()
 }
 
+/// Whether this process runs under a restricted token, as the Windows tier
+/// of `openmoat run` starts the agent and its hooks (ADR-115).
+#[cfg(windows)]
+pub fn run_in_restricted_token() -> bool {
+    run::windows::in_restricted_token()
+}
+
 /// Why `openmoat run` cannot sandbox on this machine; `None` when it can.
 pub fn run_unavailable() -> Option<String> {
     run::unavailable()
+}
+
+/// Whether the system's bubblewrap creates a user namespace here, for the
+/// agents' own sandboxes (`sandbox::linux_needs`); `None` without it or off
+/// Linux.
+pub fn run_bubblewrap_userns() -> Option<std::result::Result<(), String>> {
+    run::bubblewrap_userns()
 }
 
 /// What `openmoat run` lacks here for its full boundary (ADR-077); `None` when

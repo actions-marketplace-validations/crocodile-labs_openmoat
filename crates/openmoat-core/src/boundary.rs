@@ -11,6 +11,11 @@
 
 use serde::{Deserialize, Serialize};
 
+mod score;
+pub use score::{
+    ProtectionScore, ScoreItem, WEIGHTS_LINUX, WEIGHTS_MACOS, WEIGHTS_WINDOWS, weights,
+};
+
 /// The version of the record's JSON form.
 pub const VERSION: u32 = 1;
 
@@ -38,6 +43,35 @@ pub struct EffectiveBoundary {
     /// What the check after the agent started found; `None` before the
     /// agent starts (`--print-boundary`) or where no report came back.
     pub launch: Option<LaunchCheck>,
+    /// Which inherited variables reach the agent (ADR-105), names only;
+    /// absent from records written before it was added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<RunEnvironment>,
+    /// The protection score of this run (ADR-108): which of the platform's
+    /// kernel features are in force, out of 100, with the missing ones named.
+    /// Set by [`Self::rescore`], which [`Self::launched`] calls again; absent
+    /// from records written before it was added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<ProtectionScore>,
+}
+
+/// What of the environment `openmoat run` was started from reaches the
+/// program it starts (ADR-105). Names only: a value is never in the record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunEnvironment {
+    /// Whether only the allowlist passes, rather than every inherited name.
+    pub scrubbed: bool,
+    /// What chose it, in the words the run notice uses.
+    pub why: String,
+    /// Scrubbed: the inherited names that pass, sorted. Inherited: empty,
+    /// since every name passes, a brokered secret's excepted.
+    pub passed: Vec<String>,
+    /// The inherited names the program does not get, sorted; empty when the
+    /// environment is inherited.
+    pub withheld: Vec<String>,
+    /// The names that hold a brokered secret's placeholder instead of its
+    /// value (ADR-020), sorted.
+    pub brokered: Vec<String>,
 }
 
 /// The tier asked for on the command line.
@@ -59,7 +93,8 @@ pub enum Tier {
     /// The agent's own sandbox and OpenMoat's hooks, without `openmoat run`;
     /// named so a record compares with a hook-only session, never one a run starts.
     Standard,
-    /// Landlock and seccomp, or Seatbelt, over the whole machine.
+    /// Landlock and seccomp, or Seatbelt, over the whole machine; on Windows
+    /// a write-restricted token in a job object, which holds writes only.
     Lightweight,
     /// bubblewrap's own view of the machine around the same rules.
     Isolated,
@@ -112,6 +147,10 @@ pub enum NetworkMode {
     PortOnly,
     /// The Seatbelt profile allows the proxy's address alone (macOS).
     Profile,
+    /// The proxy variables alone (`HTTP_PROXY`, `HTTPS_PROXY`, …): nothing in
+    /// the operating system holds the network, so a program that ignores them
+    /// connects directly (Windows, ADR-115).
+    ProxyVariables,
 }
 
 /// The Landlock part of the record (Linux).
@@ -168,6 +207,9 @@ pub enum Mechanism {
     /// Pathname Unix sockets made outside the sandbox refused (ABI 9, best
     /// effort).
     LandlockResolveUnix,
+    /// Every UDP bind, connect and send refused (ABI 10, best effort, ADR-108):
+    /// the kernel's own rule beside the seccomp filter's refusal of UDP sockets.
+    LandlockUdp,
     /// The seccomp filters.
     Seccomp,
     /// `PR_SET_NO_NEW_PRIVS`: no set-user-ID gain across `exec`.
@@ -177,6 +219,20 @@ pub enum Mechanism {
     /// bubblewrap's view of the machine: the project without its denied
     /// paths, the read roots and `--write` paths (the Isolated tier).
     IsolatedView,
+    /// Windows: the agent's write-restricted token (ADR-115). A write needs
+    /// the run's own SIDs to be granted it too, and they are granted only on
+    /// the project, the run's temp directory and `--write` paths.
+    RestrictedToken,
+    /// Windows: the job object the agent and every process it starts are in,
+    /// which kills them all when the run ends and lets none break away.
+    JobObject,
+    /// Windows: a Windows Filtering Platform filter holding the network to
+    /// the proxy. Not part of OpenMoat's Windows tier yet, so never in force.
+    WfpNetwork,
+    /// Windows: reads the policy denies refused by the operating system. A
+    /// write-restricted token does not restrict reads, so never in force;
+    /// the hook decides every read.
+    WindowsReadDeny,
 }
 
 impl Mechanism {
@@ -189,10 +245,15 @@ impl Mechanism {
             Self::LandlockTcpPort => "landlock_tcp_port",
             Self::LandlockScopes => "landlock_scopes",
             Self::LandlockResolveUnix => "landlock_resolve_unix",
+            Self::LandlockUdp => "landlock_udp",
             Self::Seccomp => "seccomp",
             Self::NoNewPrivs => "no_new_privs",
             Self::NetworkNamespace => "network_namespace",
             Self::IsolatedView => "isolated_view",
+            Self::RestrictedToken => "restricted_token",
+            Self::JobObject => "job_object",
+            Self::WfpNetwork => "wfp_network",
+            Self::WindowsReadDeny => "windows_read_deny",
         }
     }
 }
@@ -234,7 +295,8 @@ impl Restriction {
     /// for the seccomp filters and `no_new_privs` (`tested`), and for
     /// Landlock's required rights and bubblewrap's namespace and view
     /// (`applied`). Best-effort steps and Seatbelt, which nothing reports,
-    /// are missing only when reported off.
+    /// are missing only when reported off. On Windows the token and the job
+    /// must be confirmed on the agent's own process (`tested`).
     #[must_use]
     pub fn missing(&self, launched: bool) -> bool {
         if !self.configured || !self.available {
@@ -242,14 +304,20 @@ impl Restriction {
         }
         let reported_off = self.applied == Some(false) || self.tested == Some(false);
         let confirmed = match self.name {
-            Mechanism::Seccomp | Mechanism::NoNewPrivs => self.tested == Some(true),
+            Mechanism::Seccomp
+            | Mechanism::NoNewPrivs
+            | Mechanism::RestrictedToken
+            | Mechanism::JobObject => self.tested == Some(true),
             Mechanism::LandlockFilesystem
             | Mechanism::LandlockTcpPort
             | Mechanism::NetworkNamespace
             | Mechanism::IsolatedView => self.applied == Some(true),
-            Mechanism::LandlockScopes | Mechanism::LandlockResolveUnix | Mechanism::Seatbelt => {
-                true
-            }
+            Mechanism::LandlockScopes
+            | Mechanism::LandlockResolveUnix
+            | Mechanism::LandlockUdp
+            | Mechanism::Seatbelt
+            | Mechanism::WfpNetwork
+            | Mechanism::WindowsReadDeny => true,
         };
         reported_off || (launched && !confirmed)
     }
@@ -283,6 +351,21 @@ pub struct LaunchCheck {
     pub proc_seccomp_filter: Option<bool>,
     /// The report came from `openmoat isolated` inside bubblewrap.
     pub in_bubblewrap: bool,
+    /// Windows: the agent's process was created with the write-restricted
+    /// token (`CreateProcessAsUserW` took it); absent from other records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restricted_token: Option<bool>,
+    /// Windows: the agent's own token, read back before it ran, is restricted
+    /// (`IsTokenRestricted`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_token_restricted: Option<bool>,
+    /// Windows: the agent was put in the run's kill-on-close job before it ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub job_object: Option<bool>,
+    /// Windows: the agent's process, checked before it ran, is in that job
+    /// (`IsProcessInJob`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_in_job: Option<bool>,
     /// Why the launch was stopped, when it was.
     pub failure: Option<String>,
 }
@@ -359,6 +442,7 @@ impl EffectiveBoundary {
                 Mechanism::LandlockFilesystem | Mechanism::LandlockTcpPort => (enforced, None),
                 Mechanism::LandlockScopes => (step(6), None),
                 Mechanism::LandlockResolveUnix => (step(9), None),
+                Mechanism::LandlockUdp => (step(10), None),
                 Mechanism::Seccomp => (
                     check.seccomp_filters.map(|n| n > 0),
                     check.proc_seccomp_filter,
@@ -367,7 +451,13 @@ impl EffectiveBoundary {
                 Mechanism::NetworkNamespace | Mechanism::IsolatedView => {
                     (Some(check.in_bubblewrap), None)
                 }
-                Mechanism::Seatbelt => (None, None),
+                Mechanism::RestrictedToken => {
+                    (check.restricted_token, check.agent_token_restricted)
+                }
+                Mechanism::JobObject => (check.job_object, check.agent_in_job),
+                Mechanism::Seatbelt | Mechanism::WfpNetwork | Mechanism::WindowsReadDeny => {
+                    (None, None)
+                }
             };
             if restriction.configured {
                 restriction.applied = applied;
@@ -375,6 +465,12 @@ impl EffectiveBoundary {
             }
         }
         self.launch = Some(check);
+        self.rescore();
+    }
+
+    /// Work out [`Self::score`] from the record as it stands.
+    pub fn rescore(&mut self) {
+        self.score = Some(score::of(self));
     }
 
     /// The restrictions the run asked for, the system has, and the launch

@@ -170,6 +170,70 @@ OpenMoat's read denies hold only through the hook there (ADR-083). `openmoat sta
 `hook only`, and a sandbox that is missing, weakened or out of date the same way, with
 the reason ([USAGE.md](USAGE.md#how-each-agent-is-protected)).
 
+### What each agent's sandbox needs on Linux
+
+What each agent's documentation says its own Linux sandbox needs. The programs and user
+namespaces are in each host's spec (`SandboxSpec::linux_needs`), and `openmoat doctor`
+checks them ([USAGE.md](USAGE.md#can-the-agents-own-sandbox-start-commands-here-linux));
+the Landlock ABI has its own `landlock` row there:
+
+| Agent | Needs | Where it is missing | Source |
+|---|---|---|---|
+| Claude Code | `bwrap` (package `bubblewrap`) and `socat` on `PATH`; user namespaces as the user | with `failIfUnavailable` and no unsandboxed commands, its Bash commands fail | [Sandboxing](https://code.claude.com/docs/en/sandboxing), "Set up Linux and WSL2" |
+| Codex | user namespaces as the user; the first `bwrap` on `PATH`, else a bundled helper that needs them too | Codex warns when it starts, and its sandboxed commands cannot start | [Sandboxing](https://developers.openai.com/codex/sandboxing) |
+| Cursor | Linux 6.2 with Landlock v3, and unprivileged user namespaces | Cursor asks before running each command instead | [Run Modes](https://cursor.com/docs/agent/security/run-modes) |
+
+User namespaces are refused to a user where `user.max_user_namespaces` is `0`, where
+Debian's `kernel.unprivileged_userns_clone` is `0`, on Ubuntu 23.10 and later where
+`kernel.apparmor_restrict_unprivileged_userns` is `1` (the default) and the program has
+no AppArmor profile that allows them, and in containers and virtual machines that do not
+allow them. Each agent's documentation gives its own fix for Ubuntu, and they differ
+(each host's spec names it, `LinuxSandboxNeeds::apparmor`):
+
+- **Claude Code** ("Add an AppArmor profile for bubblewrap"): where it runs
+  `/usr/bin/bwrap`, write the profile its page gives to `/etc/apparmor.d/bwrap`
+  (`profile bwrap /usr/bin/bwrap flags=(unconfined) { userns, … }`), run `sudo systemctl
+  reload apparmor` and restart Claude Code; for any other `bwrap`, `sudo sysctl -w
+  kernel.apparmor_restrict_unprivileged_userns=0`.
+- **Codex**: load Ubuntu's `bwrap-userns-restrict` profile (on Ubuntu 24.04 from the
+  `apparmor-profiles` package, `/usr/share/apparmor/extra-profiles/bwrap-userns-restrict`;
+  Ubuntu 25.04's `apparmor` package ships it in `/etc/apparmor.d/`), and the `sysctl` as a
+  last resort.
+- **Cursor**: its desktop app needs no setup; remote environments and the standalone CLI
+  install Cursor's `cursor-sandbox-apparmor` package.
+
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` lifts the restriction for
+every program until the next reboot; the same line in a file under `/etc/sysctl.d/` keeps
+it.
+
+**`bwrap-userns-restrict` breaks Claude Code's sandbox (#784).** The profile attaches
+`bwrap` to `/usr/bin/bwrap` and stacks everything bubblewrap starts into `unpriv_bwrap`,
+which denies every capability (its own comment: so that "its children do not have
+capabilities"). bubblewrap still creates its namespaces, but Claude Code's seccomp step
+then makes a user namespace inside bubblewrap's and fails with `apply-seccomp: write
+/proc/self/setgroups (nested userns is capability-restricted; caller must provide
+CAP_SYS_ADMIN)`. The `sysctl` does not help: the profile applies whatever it says. This
+is what GitHub's `ubuntu-latest` runner loads. The fix is Claude Code's own profile in its
+place; both name their profile `bwrap`, so only one can apply. Disable Ubuntu's the way
+Ubuntu's AppArmor documentation disables a profile (`sudo ln -s
+/etc/apparmor.d/bwrap-userns-restrict /etc/apparmor.d/disable/`, then `sudo
+apparmor_parser -R /etc/apparmor.d/bwrap-userns-restrict`), write Claude Code's, reload
+AppArmor and restart Claude Code. Claude Code's profile lets `/usr/bin/bwrap` create user
+namespaces for Codex too.
+
+`openmoat doctor` reads which profile applies to `/usr/bin/bwrap`: from the kernel's
+list (`/sys/kernel/security/apparmor/profiles`) where the user may read it, which is
+usually root only, else from the files in `/etc/apparmor.d/` (less those linked in its
+`disable/`), which AppArmor loads at boot. With `bwrap-userns-restrict` there and the
+first `bwrap` on `PATH` being `/usr/bin/bwrap`, it warns for Claude Code even though
+bubblewrap creates its namespaces, and names the replacement above as the only fix; it
+also prints `kernel.apparmor_restrict_unprivileged_unconfined` when that is `1`. Where
+neither can be read, it says nothing about the profile.
+
+No policy setting leaves one agent's sandbox off: where an agent's sandbox cannot start,
+its hook still decides each call, and the fix is the machine's
+([LIMITS.md](LIMITS.md)).
+
 Network has two modes:
 
 - **Default:** each agent's own proxy enforces the allowlist.
@@ -274,7 +338,12 @@ the documentation, and the generated file has not yet been run under a Cursor bu
 
 `sandbox.json` has no key that denies a path. A read root with a denied path below it
 (`~/.cargo` holds `~/.cargo/credentials.toml`) is therefore left out, which is stricter
-and is listed as such, and what the policy denies by name inside the workspace
+and is listed as such; a system folder, outside your home directory with every denied
+path in it outside it too (`/etc` holds `/etc/shadow`), is granted whole, since nearly
+every command reads it, and its denied paths are listed as wider
+(`cursor.system-folder`): there the system's own file permissions keep them from you,
+and the hook still denies every call that names them. What the policy denies by name
+inside the workspace
 (`**/.env`, `.moat`, `.git`) stays readable and writable to sandboxed commands, listed
 as wider. Cursor itself keeps `.cursor/*.json`, `.claude/**/*.json`, `.vscode`,
 `.git/hooks`, `.git/config` and `.git/info/attributes` unwritable. With the
@@ -303,6 +372,8 @@ leaves `sandbox.json` alone and `openmoat status` reports Cursor as `hook only`.
 
 On Linux `openmoat run` starts the Isolated tier (below) by default where bubblewrap
 works, and the Lightweight tier otherwise (ADR-080). macOS has the Lightweight tier only.
+Windows has a preview tier that holds writes and the process tree only
+([below](#openmoat-run-on-windows-preview-writes-only), ADR-115).
 
 | Linux, `openmoat run` … | bubblewrap works | bubblewrap missing or blocked |
 |---|---|---|
@@ -327,8 +398,11 @@ tool `boundary`, rule `run-boundary`, its reason the whole record as JSON (ADR-0
 It names the tier asked for and the tier that started, every downgrade (the tier, the
 network, and the project's top when `sandbox.project_top: writable` opened it) with why
 and whether the person chose it, how the network is held
-(`namespace`, `port_only`, or Seatbelt's `profile`), the Landlock ABI, whether tool
-commands get the hook relay token, and for each restriction whether the system has it
+(`namespace`, `port_only`, Seatbelt's `profile`, or on Windows `proxy_variables`, which
+the operating system does not hold), the Landlock ABI, whether tool
+commands get the hook relay token, the environment (`environment`: whether it is
+scrubbed and what chose that, the inherited names that pass, the names withheld and the
+names that hold a brokered placeholder, names only, ADR-105), and for each restriction whether the system has it
 (`available`), the run asks for it (`configured`), it is in force (`applied`) and a
 check after the agent started confirmed it (`tested`).
 
@@ -366,6 +440,53 @@ suite's.
 **On macOS** the row names the Seatbelt profile, configured; `sandbox-exec` reports
 nothing back and macOS has no `/proc`, so it is neither `applied` nor `tested`, and the
 row has no `launch` part. The profile is the one `openmoat sandbox show` prints.
+
+### The protection score and strict mode
+
+Each record carries a protection score (`score`, ADR-108): every kernel feature
+`openmoat run` can use on the platform has a weight, the weights add up to 100, and the
+score is the sum of those in force, with each missing one named and what brings it.
+Planned, a feature counts when the system has it and the run asks for it; after the
+start, only when the launch confirmed it.
+
+| Linux feature | Weight | | Linux feature | Weight |
+|---|---|---|---|---|
+| `landlock_filesystem` (ABI 4) | 25 | | `landlock_resolve_unix` (ABI 9) | 5 |
+| `landlock_tcp_port` (ABI 4) | 10 | | `landlock_udp` (ABI 10) | 5 |
+| `seccomp` | 15 | | `network_namespace` (bubblewrap) | 15 |
+| `no_new_privs` | 5 | | `isolated_view` (the Isolated tier) | 15 |
+| `landlock_scopes` (ABI 6) | 5 | | | |
+
+On macOS the Seatbelt profile is the whole 100: it holds files, the network (the
+proxy's address alone) and Mach services in one. On Windows (ADR-115) the weights are
+`restricted_token` 45, `job_object` 10, `wfp_network` 30 and `windows_read_deny` 15; the
+last two are not part of OpenMoat's Windows tier yet, so a Windows run scores at most 55
+and `sandbox.strict: true` refuses every Windows run. A score compares runs on one system,
+not systems. The hook alone scores 0: an allowed call runs with your permissions.
+
+```bash
+openmoat doctor                    # on Linux 7.1 with bubblewrap:
+                                   # protection  isolated    95/100; missing: landlock_udp (not on this system: needs Landlock ABI 10, Linux 7.2; …)
+                                   # protection  lightweight 80/100; missing: landlock_udp (…); isolated_view (…)
+                                   # protection  hook-only   0/100: no kernel feature is in force; …
+openmoat run --print-boundary -- gemini | tail -1      # protection score: 95/100; missing: …
+openmoat run --print-boundary --format json -- gemini | jq .score
+```
+
+`sandbox.strict: true` in your own policy (POLICY.md §9.7) makes `openmoat run` start
+only with the whole score: it refuses before anything starts when the plan lacks a
+feature (exit 64, naming each), `--print-boundary` prints the plan and then refuses the
+same way, and after the start a feature the launch did not confirm stops the agent and
+its processes, with a `deny` boundary row. On Linux that means the Isolated tier on
+Landlock ABI 10 (Linux 7.2) or later; on a kernel or system without it, strict mode
+refuses every run, which is what it is for. A repository policy or a pack cannot set it.
+`require.run: full-boundary` (ADR-077) stays the lighter requirement: a sandbox and a
+network of the agent's own, whatever the kernel's newer steps.
+
+An empty network allowlist is no network: the proxy refuses every host and every
+address no rule allows, the Landlock and Seatbelt rules reach only the proxy's port,
+and Claude Code's settings get an empty `allowedDomains` with `strictAllowlist`, never
+a missing list.
 
 ## `openmoat run` (Lightweight tier)
 
@@ -408,7 +529,7 @@ bubblewrap.
   C library falls back to `clone`) and joining an existing one (`setns`, so `nsenter`
   and a container runtime's `exec` fail), and refuses `pidfd_getfd` (copying an open
   file of another process; `pidfd_open` stays). Containers, bubblewrap and Chromium's own
-  sandbox cannot start inside. Windows refuses.
+  sandbox cannot start inside. Windows has its own preview tier (below).
 - **Newer Linux kernels (the Landlock ABI ladder, ADR-082).** `openmoat run` needs
   Landlock ABI 4 and adds what a newer kernel has beside the seccomp filter, never in
   its place, so an older kernel keeps exactly the protection above:
@@ -421,7 +542,7 @@ bubblewrap.
   | 7 | 6.15 | not used (kernel audit logging): OpenMoat's audit log records its own decisions |
   | 8 | 7.0 | not used (one ruleset for all threads): OpenMoat's proxy thread must stay outside |
   | 9 | 7.1 | used: a pathname Unix socket made outside the sandbox cannot be connected or sent to |
-  | 10 | 7.2 | not used yet (UDP): the `landlock` crate cannot ask for it; seccomp refuses UDP |
+  | 10 | 7.2 | used: every UDP bind, connect and send refused (ADR-108); no rule grants UDP, so no datagram (DNS to any resolver) leaves, beside seccomp's refusal of UDP sockets |
   | 11 | 7.3 | nothing to add (`no_new_privs` is set already) |
   | 12 | 7.4 | not used yet (capabilities, namespaces): seccomp refuses new namespaces |
 
@@ -449,6 +570,20 @@ bubblewrap.
   start there instead (exit 64); the default, `--netns=auto`, is the behaviour above.
   A policy with `require.run: full-boundary` ([POLICY.md §9.3](POLICY.md#93-requiring-openmoat-runs-full-boundary-requirerun))
   refuses there too, whatever `--netns` says.
+- **The environment.** With `sandbox.env: scrubbed`, `--scrub-env` or `require.run:
+  full-boundary`, the agent and everything it starts get only an allowlist of the
+  environment `openmoat run` was started from: what programs and builds need, the
+  agent's own variables from its spec, and the names you add
+  ([POLICY.md §9.6](POLICY.md#96-the-environment-openmoat-run-passes-on-sandboxenv),
+  ADR-105). The variables are gone from the process, so no spelling reads them, and the
+  environment of `openmoat run` itself, which still has them, is out of reach: the macOS
+  profile denies `kern.procargs*` and on Linux no grant covers `/proc` (the Isolated tier
+  also has its own process namespace). A brokered secret's variable holds its placeholder
+  in every mode. Off by default for now; `openmoat run --print-boundary` names what would
+  pass. The agents' own sandboxes are not scrubbed: Claude Code's settings can set a
+  variable but not remove one, and its `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` and Codex's
+  `shell_environment_policy` are documented but not yet tried against OpenMoat's hook,
+  so `openmoat init` writes neither (ADR-105 lists what they do).
 - **Files the launcher left open.** Landlock and Seatbelt check a path when it is
   opened, not a descriptor opened before, so a file, socket or directory that the
   shell, IDE or CI runner starting `openmoat run` left open (`exec 3<~/.ssh/id_rsa`)
@@ -728,6 +863,46 @@ macOS and Linux (reading keys and credentials, writing outside the project, dire
 connections, DNS, symlinks out of the project, editing the policy), as CI asserts it on
 every pull request, with the Linux gaps marked.
 
+## `openmoat run` on Windows (preview: writes only)
+
+On native Windows `openmoat run` starts the program under a **write-restricted token**,
+in a **job object**, with the proxy variables pointing at the run's proxy (ADR-115). It is
+a preview: it holds writes and the process tree, and nothing else.
+
+```powershell
+openmoat run --write $HOME\.claude -- claude          # the agent's .exe, not an npm .cmd shim
+openmoat run --print-boundary -- claude               # the plan: score 55/100, what is missing
+openmoat doctor                                       # protection  lightweight 55/100; missing: wfp_network (…); windows_read_deny (…)
+```
+
+| What | On Windows |
+|---|---|
+| Writes outside the project, the run's temp directory and `--write` paths | refused by the token. Windows checks a write against the person's SIDs and again against the token's restricting SIDs (`Everyone`, the logon session's, one for the agent's own objects, one per write root); only the roots grant their SID |
+| `.git`, `.moat`, the editors' and CI folders at the project's top | refused: a deny entry for the root's SID on each one that exists when the run starts, and `DELETE` denied on the folders above it |
+| The same names deeper in the project, globs (`*.code-workspace`), places made later | **the hook's alone**; the run's report (`--verbose`) names them |
+| Anything whose access list grants `Everyone` write | writable, as in Codex's Windows sandbox |
+| Reads | **not restricted**: a write-restricted token is checked on writes only. Secrets, other agents' logins and OpenMoat's state are readable to commands; every read deny rule is the hook's alone |
+| Network | **not held by the operating system**: `HTTP_PROXY`, `HTTPS_PROXY` and `ALL_PROXY` send programs that honour them through the run's proxy; one that ignores them connects directly. The record says `proxy_variables`; `--netns=require` and `require.run: full-boundary` refuse |
+| Processes | the agent starts suspended and inherits only its three standard handles; it is put in a job that no process may leave and that ends every process in it when the run ends; its token and job are read back before it runs (the boundary row's `launch`) |
+| Batch files | refused: `cmd.exe` reads a `.bat`/`.cmd` file's arguments by its own rules. Start the agent's `.exe`, or `node` with the package's script |
+| Tool-shell wrapper (ADR-075) | none: tool commands keep the hook relay token, and the record says so |
+| `--isolate` | refused: there is no Isolated tier on Windows |
+
+**The access-list entries are kept.** The first run in a folder adds one inherited entry
+for that folder's own SID (`S-1-5-21-…`, derived from its path), which Windows hands to
+every file below; in a large tree that takes a while once, and the run says so. Later runs
+find it and change nothing. The SIDs belong to no account, so the entries give no one
+else anything; `icacls <folder>` lists them. A write root at or inside OpenMoat's state
+directory is refused, whose list stays exactly the two entries `init` set (ADR-083).
+
+**Hooks inside the run.** A hook the agent starts can read the state directory but not
+write the audit log, so the guard opens the lock for writing and, when that is refused
+and its own token is restricted, has the run decide the call (ADR-028); a variable or a
+setting cannot make a token restricted.
+
+`openmoat mcp wrap` does not put MCP servers under this tier by default (most start
+through `npx`, a batch file); `openmoat mcp wrap --sandbox` asks for it.
+
 ## `openmoat run --isolate` (Isolated tier, Linux)
 
 On Linux the Isolated tier runs the agent in its own view of the machine, built with
@@ -825,12 +1000,20 @@ OS sandbox: openmoat run --write ~/.gemini -- gemini (docs/SANDBOX.md)
 | Cline CLI | `openmoat run --write ~/.cline -- cline` |
 | goose | `openmoat run --write ~/.local/share/goose --write ~/.local/state/goose -- goose` |
 | Antigravity CLI | `openmoat run --write ~/.gemini/antigravity-cli -- agy` |
+| Qwen Code | `openmoat run --write ~/.qwen -- qwen` |
+| Crush | `openmoat run --write ~/.local/share/crush --write ~/.cache/crush -- crush` |
 
-On macOS before 13, on Windows, and on Linux without a network namespace (where
-`openmoat run` refuses a `--write` path outside the project) those commands name why
-there is none. OpenClaw and the Continue CLI get no command: OpenClaw's Gateway serves a
+On macOS before 13 and on Linux without a network namespace (where `openmoat run`
+refuses a `--write` path outside the project) those commands name why there is none. On
+Windows they start the preview tier, which holds writes only; start the agent's `.exe`,
+not an npm `.cmd` shim. OpenClaw and the Continue CLI get no command: OpenClaw's Gateway serves a
 local port, which the sandbox does not allow, and which directories `cn` writes was not
 checked.
+
+`openmoat status` lists each agent with a command and no sandboxed-start shim under
+`Needs your attention` (ADR-108): `hook only: no OS boundary`, with that one command as
+the fix. A warning: the status stays healthy. `openmoat init` names the same, per agent,
+before it asks whether typing the agent's name should start it confined (ADR-106).
 
 What the command does not do for you:
 

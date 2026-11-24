@@ -83,6 +83,12 @@ pub struct Lock {
     /// lock from before MCP pinning; their drift holds back only that server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_servers: Option<crate::mcp::Pins>,
+    /// The hook commands, plugin hooks and program-running settings a person
+    /// accepted besides OpenMoat's own hook (`hook_ledger.rs`, ADR-109).
+    /// `None` in a lock from before the ledger, which holds nothing; a new or
+    /// changed entry holds only the calls of the agent that loads it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook_ledger: Option<crate::hook_ledger::Pins>,
     /// Pinned hook file → id of the host that owns it, for each file the lock
     /// pins in that host's pinned form rather than by its bytes (OpenClaw's
     /// `openclaw.json` without `mcp.servers`; `forms.rs`). `None` in a lock
@@ -99,7 +105,7 @@ pub struct Lock {
 
 /// Which hook files a re-pin covers, besides OpenMoat's own state files.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HookPins {
+pub enum HookPins<'a> {
     /// `moat init`: the hook files already pinned plus every hook file installed
     /// under this shell's environment.
     Adopt,
@@ -108,12 +114,28 @@ pub enum HookPins {
     /// (its spec's `InstallSpec::dir_variable`: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
     /// …), which need not be this shell's, so a re-pin must not decide again which files those are.
     Keep,
+    /// `moat init --hooks-only`: the pins of a readable lock (hook files, MCP
+    /// servers, sandbox files) plus the hook files of these hosts. Without a
+    /// readable lock there is nothing to keep, so it pins what `Adopt` does:
+    /// pinning more is never weaker.
+    Selected(&'a [Host]),
+}
+
+impl<'a> HookPins<'a> {
+    /// `init`'s: `Adopt`, or with `--hooks-only` the `hosts` it writes.
+    pub fn for_init(hooks_only: bool, hosts: &'a [Host]) -> Self {
+        if hooks_only {
+            Self::Selected(hosts)
+        } else {
+            Self::Adopt
+        }
+    }
 }
 
 /// Pin everything the kernel trusts: policy, environment snapshot, approval
 /// files and the host hook files `hooks` selects. Used by `init`,
 /// `doctor --accept` and `allow`, which are the only human paths that may re-pin.
-pub fn repin(home: &Home, binary: &Path, hooks: HookPins) -> Result<Lock> {
+pub fn repin(home: &Home, binary: &Path, hooks: HookPins<'_>) -> Result<Lock> {
     repin_with(home, binary, hooks, &[], &[])
 }
 
@@ -122,7 +144,7 @@ pub fn repin(home: &Home, binary: &Path, hooks: HookPins) -> Result<Lock> {
 pub fn repin_with(
     home: &Home,
     binary: &Path,
-    hooks: HookPins,
+    hooks: HookPins<'_>,
     files: &[PathBuf],
     by_part: &[PathBuf],
 ) -> Result<Lock> {
@@ -132,10 +154,14 @@ pub fn repin_with(
     let lock_path = home.lock_path();
     let had_lock = lock_path.exists();
     let mut mcp_servers = None;
+    let mut hook_ledger = None;
     let mut owners = Vec::new();
+    // Whether the pins of a readable lock are carried over.
+    let mut kept_old = false;
     if had_lock {
         match (Lock::load(&lock_path), hooks) {
             (Ok(old), _) => {
+                kept_old = true;
                 // This shell's hook files, which an older lock's guessed
                 // owners are kept for (`owner.rs`); none when they cannot be
                 // told, and none needed when the lock records its owners.
@@ -154,6 +180,8 @@ pub fn repin_with(
                 owners = old.owners_with(&here);
                 // Only `moat mcp accept` and `moat doctor --accept` change these.
                 mcp_servers = old.mcp_servers;
+                // Only `hooks accept`, `doctor --accept` and `init` change these.
+                hook_ledger = old.hook_ledger;
                 paths.extend(old.entries.into_keys().map(PathBuf::from));
                 profiles.extend(old.codex_profiles.into_keys().map(PathBuf::from));
             }
@@ -163,16 +191,31 @@ pub fn repin_with(
                 );
             }
             // `init` is how a person recovers from an unreadable lock.
-            (Err(_), HookPins::Adopt) => {}
+            (Err(_), HookPins::Adopt | HookPins::Selected(_)) => {}
         }
     }
-    // Without a lock there is nothing to keep, so this environment's hooks it is.
-    if hooks == HookPins::Adopt || !had_lock {
+    // Without pins to keep (no lock, or one that cannot be read), every hook
+    // and sandbox file installed under this environment is pinned, whatever
+    // `hooks` says: `Selected` names the hooks `init` writes, and pinning
+    // only those would leave another agent's installed hook unchecked.
+    let adopt_all = match hooks {
+        HookPins::Adopt => true,
+        HookPins::Keep | HookPins::Selected(_) => !kept_old,
+    };
+    if adopt_all {
         let installed = installed_hooks(home, binary)?;
         owners.extend(installed.iter().map(|c| (c.settings_path.clone(), c.host)));
         paths.extend(installed.iter().flat_map(pinned_with));
         profiles.extend(crate::sandbox::install::part_pinned_settings(home)?);
         paths.extend(crate::sandbox::install::whole_pinned_settings(home)?);
+    } else if let HookPins::Selected(selected) = hooks {
+        for host in selected {
+            let config = HostConfig::for_host(home, *host)?;
+            if config.state(binary) == HookState::Installed {
+                owners.push((config.settings_path.clone(), config.host));
+                paths.extend(pinned_with(&config));
+            }
+        }
     }
     let mut lock = Lock::pin_owned(binary, &paths, &owners)?;
     // A state file that is missing (one a person accepted as deleted) is
@@ -184,6 +227,7 @@ pub fn repin_with(
             .or_insert_with(|| kept::ABSENT.to_owned());
     }
     lock.mcp_servers = mcp_servers;
+    lock.hook_ledger = hook_ledger;
     // What the guard compares its own file with (ADR-071); a person's re-pin
     // is what records it.
     (lock.binary_sha256, lock.binary_version) = binary::record(home, binary).unzip();
@@ -197,7 +241,7 @@ pub fn repin_with(
 
 /// OpenMoat's own files, pinned by every lock whatever the environment.
 fn state_files(home: &Home) -> Vec<PathBuf> {
-    vec![
+    let mut files = vec![
         home.policy_path(),
         home.environment_path(),
         home.grants_path(),
@@ -207,7 +251,14 @@ fn state_files(home: &Home) -> Vec<PathBuf> {
         // Where the audit log is sent (ADR-081): a changed file could send it
         // to another place, so it is pinned as the policy is.
         home.delivery_config_path(),
-    ]
+        // The person's opt-in choices (ADR-106): the decoys the guard checks
+        // for, the sandboxed-start record and each shim it lists, which runs
+        // whenever the person types the agent's command.
+        crate::canary::record_path(home),
+        crate::start::record_path(home),
+    ];
+    files.extend(crate::start::pinned_files(home));
+    files
 }
 
 /// The signing files only `moat policy trust-key`, `install` and `remove` pin
@@ -472,6 +523,7 @@ impl Lock {
             permission_keys,
             relaxed_rest,
             mcp_servers: None,
+            hook_ledger: None,
             pinned_forms: Some(pinned_forms),
             hook_owners: Some(hook_owners),
         })

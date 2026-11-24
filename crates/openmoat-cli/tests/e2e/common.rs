@@ -18,7 +18,6 @@ use tempfile::TempDir;
 /// Success, or verdict `allow`.
 pub const OK: i32 = 0;
 /// The agent `moat run` started failed; never a verdict.
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub const FAILED: i32 = 1;
 /// Verdict `deny`; also every error in `moat guard`.
 pub const DENY: i32 = 2;
@@ -195,6 +194,14 @@ impl Sandbox {
     /// ` guard --host <host> --home <state directory>`.
     pub fn hook_args(&self, host: &str) -> String {
         format!(" guard --host {host} --home {}", self.home_word())
+    }
+
+    /// What a POSIX shell hook `moat init` writes for a host whose call runs
+    /// when its hook fails ends with: [`Sandbox::hook_args`] followed by the
+    /// fail-safe tail that turns a missing or killed guard into a block
+    /// ([`openmoat_hosts::SH_TAIL`], ADR-109).
+    pub fn fail_safe_hook_args(&self, host: &str) -> String {
+        self.hook_args(host) + openmoat_hosts::SH_TAIL
     }
 
     /// Run the hook for `host` with `payload` as `moat init` wrote it, the

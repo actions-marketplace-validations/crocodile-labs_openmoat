@@ -123,6 +123,25 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         relaxed_keys: settings::RELAXED_KEYS,
         relaxed_check: crate::RelaxedCheck::ByKey,
         unpinned_keys: settings::UNPINNED_KEYS,
+        // Each session's transcript is `projects/<the project's path, dashed>/
+        // <session id>.jsonl`, the `transcript_path` its hooks receive;
+        // sign-in, `claude mcp` and `--help` write none. Source: "Application
+        // data" in https://code.claude.com/docs/en/claude-directory (under
+        // `CLAUDE_CONFIG_DIR` when it is set); a subagent's transcript, one
+        // level down, is not counted.
+        liveness: Some(crate::Liveness {
+            settings: &[],
+            sessions: crate::Sessions::Known(&[crate::Activity::new(&[
+                "projects",
+                crate::Activity::ANY,
+            ])
+            .ending(".jsonl")]),
+            started: Some(crate::Started {
+                tool: session_start::EVENT,
+                matcher: TOOL_MATCHER,
+                tool_uses: session_start::tool_uses,
+            }),
+        }),
         ..InstallSpec::BASE
     }),
     mcp: Some(McpSpec {
@@ -130,6 +149,7 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         user_reader: &mcp::ClaudeJson,
         project_files: &[(".mcp.json", &McpServersJson)],
         tool_names: &Prefixed,
+        call_ids: None,
         auto_start: Some(&mcp::AutoStartSettings),
     }),
     // Claude Code's sandbox runs on macOS, Linux and WSL2 only, and with
@@ -144,6 +164,32 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         ),
         windows_modes: None,
         tiocsti_open_on_linux: false,
+        // The sandboxing docs, "Set up Linux and WSL2": the sandbox relies on
+        // `bubblewrap` and `socat`; Ubuntu's AppArmor restriction on user
+        // namespaces "keeps the sandbox from starting". With
+        // `failIfUnavailable` and `allowUnsandboxedCommands: false` nothing
+        // runs outside it.
+        linux_needs: Some(crate::contract::LinuxSandboxNeeds {
+            programs: &[
+                crate::contract::LinuxProgram {
+                    name: "bwrap",
+                    package: "bubblewrap",
+                },
+                crate::contract::LinuxProgram {
+                    name: "socat",
+                    package: "socat",
+                },
+            ],
+            user_namespaces: true,
+            without: "its Bash commands fail (`failIfUnavailable`, no unsandboxed commands)",
+            // The same page, "Add an AppArmor profile for bubblewrap": the
+            // profile `bwrap` for `/usr/bin/bwrap`, `flags=(unconfined)` with
+            // `userns`, in `/etc/apparmor.d/bwrap`. Under Ubuntu's
+            // `bwrap-userns-restrict` its seccomp step fails with "apply-seccomp:
+            // write /proc/self/setgroups (nested userns is capability-restricted
+            // …)" (#784).
+            apparmor: crate::contract::UsernsProfileFix::UnconfinedBwrapProfile,
+        }),
         // The hooks reference, "Persist environment variables": each Bash
         // command runs the file's lines first (ADR-044).
         proxy_sessions: ProxySessions::EnvFile("CLAUDE_ENV_FILE"),
@@ -270,6 +316,31 @@ pub(crate) static SPEC: HostSpec = HostSpec {
     weekly: weekly::WEEKLY,
     hook_off: hook_off::HOOK_OFF,
     plugin: crate::contract::Plugin::Package(&plugin::SPEC),
+    ledger: crate::Ledger {
+        // A project's shared and local settings hold hooks as the user file
+        // does (hooks documentation, "Configuration").
+        project_hook_files: &["settings.json", "settings.local.json"],
+        // An installed marketplace plugin's copy is
+        // `plugins/cache/<marketplace>/<plugin>/<version>/`, a plugin saved
+        // under `skills/` loads in place; each brings `hooks/hooks.json` and
+        // whatever its manifest's `hooks` names or holds (plugins reference,
+        // "Standard layout", "hooks"; plugin loading, "Find plugins on disk").
+        plugin_hooks: &[
+            crate::PluginHooks::new(
+                &[
+                    "plugins",
+                    "cache",
+                    crate::Activity::ANY,
+                    crate::Activity::ANY,
+                    crate::Activity::ANY,
+                ],
+                &["hooks", "hooks.json"],
+            )
+            .manifest(&[".claude-plugin", "plugin.json"], "hooks"),
+            crate::PluginHooks::new(&["skills", crate::Activity::ANY], &["hooks", "hooks.json"])
+                .manifest(&[".claude-plugin", "plugin.json"], "hooks"),
+        ],
+    },
     ..HostSpec::BASE
 };
 

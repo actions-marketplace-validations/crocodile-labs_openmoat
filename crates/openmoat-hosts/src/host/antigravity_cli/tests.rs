@@ -45,7 +45,15 @@ fn every_documented_file_tool_maps_to_what_it_touches() {
         path: path.to_owned(),
     };
     assert_eq!(action("view_file", &json!({"AbsolutePath": "/p/a"})), Some(read("/p/a")));
+    assert_eq!(action("read_file", &json!({"Path": "/p/a"})), Some(read("/p/a")));
     assert_eq!(action("list_dir", &json!({"DirectoryPath": "/p"})), Some(read("/p")));
+    for tool in ["write_file", "edit_file"] {
+        assert_eq!(
+            action(tool, &json!({"Path": "/p/b"})),
+            Some(Action::FsWrite { path: "/p/b".to_owned() }),
+            "{tool}"
+        );
+    }
     for tool in ["write_to_file", "replace_file_content", "multi_replace_file_content"] {
         assert_eq!(
             action(tool, &json!({"TargetFile": "/p/a"})),
@@ -162,6 +170,31 @@ fn an_unlisted_tool_is_unknown_not_allowed() {
         action("manage_task", &json!({"Action": "other"})),
         Some(Action::UnknownTool { .. })
     ));
+}
+
+/// `read_file`, `write_file` and `edit_file` are mapped from calls seen, not
+/// documented: one without a `Path` string is decided as an unknown tool, with
+/// what its other arguments name checked, never as an error or an allow.
+#[test]
+fn an_observed_file_tool_without_its_path_is_an_unknown_tool() {
+    for tool in ["read_file", "write_file", "edit_file"] {
+        for args in [
+            json!({}),
+            json!({"Path": ""}),
+            json!({"Path": 7}),
+            json!({"path": "/Users/me/.ssh/id_rsa"}),
+        ] {
+            let Some(Action::UnknownTool { tool: name, reads, writes, .. }) = action(tool, &args)
+            else {
+                panic!("{tool} {args}: not an unknown tool");
+            };
+            assert_eq!(name, tool);
+            if args.get("path").is_some() {
+                let named = reads.iter().chain(&writes);
+                assert!(named.into_iter().any(|p| p == "/Users/me/.ssh/id_rsa"), "{tool} {args}");
+            }
+        }
+    }
 }
 
 #[test]

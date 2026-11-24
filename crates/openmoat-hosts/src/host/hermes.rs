@@ -136,6 +136,16 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         // used with `hermes -p <name>`, where OpenMoat's hook does not run
         // unless that profile's `config.yaml` has it
         also_dirs: &[crate::contract::AlsoDir::EachIn("profiles")],
+        // Every session is a row of one database, `state.db` in the Hermes
+        // home (https://hermes-agent.nousresearch.com/docs/developer-guide/session-storage).
+        liveness: Some(crate::Liveness {
+            settings: &[],
+            sessions: crate::Sessions::Unknown(
+                "Hermes keeps every session in one database, `state.db`, which gateway, cron \
+                 and ACP sessions write too, and those never run the shell hook",
+            ),
+            started: None,
+        }),
         ..InstallSpec::BASE
     }),
     // `mcp_servers` in the profile's `config.yaml`
@@ -146,6 +156,7 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         user_reader: &mcp::McpServersYaml,
         project_files: &[],
         tool_names: &mcp::HermesNames,
+        call_ids: None,
         auto_start: None,
     }),
     protect: protect::PROTECT,

@@ -9,6 +9,7 @@ use super::human::Place;
 use super::{Area, Report};
 use crate::home::Home;
 use crate::install::{HookState, HostConfig, Recorded, dir_variable, env_config_dir, stale_hint};
+use crate::integrity::{HookPinGap, Lock};
 use crate::report::{Mark, Row};
 
 /// One line per host's hook, then the agents OpenMoat finds but cannot hook;
@@ -174,13 +175,22 @@ fn installed(report: &mut Report, home: &Home, config: &HostConfig, hook_files: 
             config.settings_path.display()
         ),
     );
-    // Whether the host loaded the plugin (ADR-042).
+    // Whether the host loaded the plugin (ADR-042) or still runs the hook
+    // (ADR-104).
     if let Some(loaded) = crate::heartbeat::check(home, config) {
-        let (mark, text) = crate::heartbeat::line(name, &loaded);
-        let text = format!("{name:<16} {text}");
-        match mark {
-            crate::heartbeat::Mark::Note => report.note(&text),
-            crate::heartbeat::Mark::Warning => report.warn(&text),
+        let (mark, line) = crate::heartbeat::line(host, &loaded);
+        let text = format!("{name:<16} {line}");
+        match (mark, crate::heartbeat::fix(host, &loaded)) {
+            (crate::heartbeat::Mark::Note | crate::heartbeat::Mark::Detail, _) => {
+                report.note(&text);
+            }
+            (crate::heartbeat::Mark::Warning, Some(fix)) => {
+                report.warn_as(
+                    &format!("{text}. Fix: {fix}"),
+                    Row::new(Mark::Attention, name, line).fix(fix),
+                );
+            }
+            (crate::heartbeat::Mark::Warning, None) => report.warn(&text),
         }
     }
     if config.runs_calls_when_hook_fails() {
@@ -199,5 +209,30 @@ fn installed(report: &mut Report, home: &Home, config: &HostConfig, hook_files: 
             programs = programs.join(" or "),
             since = crate::install::on_failure_since(host)
         ));
+    }
+}
+
+/// Installed hook files the lock does not pin, and pinned ones this shell
+/// does not use.
+pub(super) fn pins(report: &mut Report, lock: &Lock, home: &Home, hook_files: &[PathBuf]) {
+    let gap = HookPinGap::new(lock, home, hook_files);
+    for path in gap.unpinned {
+        report.line(
+            Area::Hook,
+            false,
+            format!(
+                "hook file        {} is not pinned by the lock; run `openmoat init` to pin it",
+                path.display()
+            ),
+        );
+    }
+    for path in gap.elsewhere {
+        let (path, moved) = (path.display(), HookPinGap::moved_by());
+        report.note_at(
+            &format!(
+                "hook file        {path} is pinned but not this shell's ({moved}); re-pinning keeps it"
+            ),
+            Place::OpenMoat,
+        );
     }
 }

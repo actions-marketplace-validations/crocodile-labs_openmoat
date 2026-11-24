@@ -19,12 +19,12 @@ pub use approvals::{
     ApprovalsCommand, ApprovalsStatusArgs, ApproverArgs, ConnectArgs, ListenArgs, WaitArgs,
 };
 pub use audit::{
-    AnchorArgs, AuditCommand, DeliverCommand, DeliverFlushArgs, DeliverStatusArgs, DeliverTestArgs,
-    EvidenceArgs, ExportArgs, StatsArgs, TeamReportArgs, VerifyArgs,
+    AnchorArgs, AuditCommand, CheckpointArgs, DeliverCommand, DeliverFlushArgs, DeliverStatusArgs,
+    DeliverTestArgs, EvidenceArgs, ExportArgs, StatsArgs, TeamReportArgs, VerifyArgs,
 };
 pub use mcp::{McpAcceptArgs, McpCommand, McpProxyArgs, McpUnwrapArgs, McpWrapArgs};
 pub use policy::{
-    ActionKind, CheckArgs, CheckDiffArgs, CompileArgs, DiffFormat, InstallArgs, LintArgs,
+    ActionKind, CheckArgs, CheckDiffArgs, CompileArgs, DiffArgs, DiffFormat, InstallArgs, LintArgs,
     MigrateArgs, PolicyCommand, RemoveArgs, TrustKeyArgs, UpgradeArgs,
 };
 pub use provenance::{DiffProvenanceArgs, ProvenanceArgs, ProvenanceLevel};
@@ -166,6 +166,25 @@ pub enum Command {
         #[command(subcommand)]
         command: McpCommand,
     },
+    /// The hook commands, plugin hooks and git programs the agents load besides
+    /// OpenMoat's hook (ADR-109): list them, and accept a new or changed one.
+    Hooks {
+        #[command(subcommand)]
+        command: HooksCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HooksCommand {
+    /// List every hook command, plugin hook, program-running setting and git program
+    /// the set-up agents load besides OpenMoat's hook, with the shell classifier's
+    /// verdict on each new or changed one. Reads files only.
+    List,
+    /// Show each new or changed one with its verdict and ask before recording it.
+    /// Until then the calls of the agent that loads it are held for review (denied
+    /// when its command is one the policy denies). Refused unless run from an
+    /// interactive terminal, by a person, and over a drifted lock.
+    Accept,
 }
 
 #[derive(Debug, Subcommand)]
@@ -199,6 +218,10 @@ pub struct StatusArgs {
 }
 
 #[derive(Debug, Args)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "four command-line flags, each of its own: clap reads them as bools"
+)]
 pub struct InitArgs {
     /// Hosts to install hooks for, without asking. Defaults to every supported host
     /// that is present, each confirmed at the terminal.
@@ -212,6 +235,19 @@ pub struct InitArgs {
     /// Print what would change without writing anything.
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Install and pin the agents' hooks only: no agent sandbox, no MCP step
+    /// (pinning or wrapping), no opt-in questions. Over a readable lock the
+    /// other agents' pins stay as they are; without one, every installed hook
+    /// is pinned, as a plain `init` does.
+    #[arg(long, conflicts_with_all = ["mcp_proxy", "mcp_no_sandbox"])]
+    pub hooks_only: bool,
+
+    /// Output format: `text` (the default), or `json`: one document on stdout
+    /// for scripts. `json` asks no question, so it needs `--hosts`, `--yes` or
+    /// `--dry-run`.
+    #[arg(long, value_enum, default_value_t = Format::Text)]
+    pub format: Format,
 
     /// Also print each file written and its hook entries, the backups and the
     /// files the lock pins.
@@ -525,11 +561,9 @@ pub struct RunArgs {
     #[arg(long, value_enum, default_value_t = Netns::Auto, value_name = "MODE")]
     pub netns: Netns,
 
-    /// A variable of this environment to pass on for this run under
-    /// `require.run: full-boundary`. A name, never `NAME=value` or a pattern.
-    /// Repeatable.
-    #[arg(long = "env", value_name = "NAME", value_parser = parse_env_name)]
-    pub envs: Vec<String>,
+    // `--env NAME`… and `--scrub-env`.
+    #[command(flatten)]
+    pub environment: RunEnvArgs,
 
     /// Take no snapshot of the project before the agent starts and after it exits
     /// (recorded in the audit log).
@@ -548,6 +582,21 @@ pub struct RunArgs {
     /// The agent and its arguments, after `--`.
     #[arg(required = true, last = true, value_name = "AGENT")]
     pub command: Vec<std::ffi::OsString>,
+}
+
+/// What `openmoat run` passes on of the environment it starts from (ADR-077, ADR-105).
+#[derive(Debug, Args)]
+pub struct RunEnvArgs {
+    /// A variable of this environment to pass on for this run when the environment is
+    /// scrubbed. A name, never `NAME=value` or a pattern. Repeatable.
+    #[arg(long = "env", value_name = "NAME", value_parser = parse_env_name)]
+    pub envs: Vec<String>,
+
+    /// Pass on only the allowlist of this environment for this run (ADR-105): what every
+    /// program needs, the agent's own variables, `sandbox.env_allow` and `--env` names.
+    /// What `sandbox.env: scrubbed` in your policy does on every run.
+    #[arg(long)]
+    pub scrub_env: bool,
 }
 
 /// Which tier `openmoat run` starts, when the person names one.

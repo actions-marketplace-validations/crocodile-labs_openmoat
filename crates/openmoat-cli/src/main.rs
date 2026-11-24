@@ -6,7 +6,10 @@
 
 mod anchor;
 mod approvals;
+mod arguments;
 mod audit_key;
+mod audit_signing;
+mod canary;
 mod cli;
 mod commands;
 mod compliance;
@@ -19,6 +22,7 @@ mod guard_relay;
 mod hangs;
 mod heartbeat;
 mod home;
+mod hook_ledger;
 mod install;
 mod integrity;
 mod json5;
@@ -26,6 +30,7 @@ mod key_file;
 mod managed;
 mod mcp;
 mod notice;
+mod opt_in;
 mod os_version;
 mod packs;
 mod plugin_record;
@@ -47,6 +52,7 @@ mod secrets;
 mod session_code;
 mod signing;
 mod snapshot;
+mod start;
 // Read and set only on Windows; its parsing is tested on every system.
 #[cfg_attr(
     all(not(windows), not(test)),
@@ -58,6 +64,7 @@ mod terminal;
 mod time;
 mod trust;
 mod upgrade;
+mod widen;
 
 use std::process::ExitCode;
 

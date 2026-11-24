@@ -38,13 +38,15 @@ Then run `openmoat init` ([below](#set-up-with-openmoat-init)).
 > [!NOTE]
 > **Windows.** On Windows, OpenMoat applies the policy through the agents' hooks. It
 > sets up no OS sandbox for Claude Code or Cursor (Codex's own sandbox settings are
-> written as on other systems), `openmoat run` refuses to start, and `openmoat proxy` cannot
+> written as on other systems), `openmoat run` starts a preview tier that refuses writes
+> outside the project and ends the agent's processes but holds neither reads nor the
+> network ([SANDBOX.md](SANDBOX.md#openmoat-run-on-windows-preview-writes-only)), and `openmoat proxy` cannot
 > be installed as a service. `openmoat init` gives the state directory an access list of
 > your account and `SYSTEM` only (on an NTFS drive; it refuses a folder another account
 > owns), which keeps other accounts out but not the agent, which runs as you: the hook's
 > rules keep the agent out of it. The hook denies commands and
-> paths that cross into WSL (`wsl`, `\\wsl$`), where no Windows path rule reaches. For OS
-> confinement, run the agent and `openmoat` inside WSL2 ([details below](#set-up-with-openmoat-init)).
+> paths that cross into WSL (`wsl`, `\\wsl$`), where no Windows path rule reaches. For
+> full OS confinement, run the agent and `openmoat` inside WSL2 ([details below](#set-up-with-openmoat-init)).
 
 > [!NOTE]
 > **The `moat` name.** The command is `openmoat`. Releases up to 0.7.0 called it
@@ -145,6 +147,9 @@ several comma-separated (each agent's id is in [FEATURES.md](FEATURES.md#each-ag
 the README's agent table). `openmoat init --yes` sets up every agent found, for
 scripts. Without a terminal and without `--yes` or `--hosts`, `init` changes no agent's
 files and says how to go on. `openmoat init --dry-run` prints what would change first.
+For provisioning scripts, `openmoat init --hooks-only --hosts <ids> --format json` writes
+and pins only those agents' hooks, asks nothing and prints one JSON document
+([USAGE.md](USAGE.md#init-for-scripts-hooks-only-and-json)).
 At a terminal, `openmoat init` lists the stdio MCP servers in the agents' user
 configuration, shows what would change (`d`) and asks before it runs them through OpenMoat;
 `--no-mcp-proxy` skips the question, `n` is remembered for that definition, and `--yes` or
@@ -157,9 +162,51 @@ out), and pins each tool's description, schemas and annotations
 `init` also pins every MCP server definition the agents load; the tool calls of a server
 that changes later, or of a new one, are refused until you run `openmoat mcp accept`.
 
+### Two choices `init` offers: decoy keys and sandboxed start
+
+After the agents, `openmoat init` at a terminal asks two more questions. Both default to
+no (Enter), `d` shows every file the yes would write, and `openmoat uninstall` takes them
+back. `--yes`, `--dry-run`, `--hooks-only`, `--format json` and a run without a terminal
+never ask and change nothing here (ADR-106).
+
+```
+  Decoy keys       plant 3 fake key file(s) (~/.aws/credentials.bak, ~/.git-credentials.bak, ~/.npmrc.bak) so that any attempt to read or send them is caught? No real file is touched  [y/N/d] y
+✔ decoy keys       3 planted: ~/.aws/credentials.bak, ~/.git-credentials.bak, ~/.npmrc.bak; reading or sending one is denied (rule canary)
+  Sandboxed start  make typing gemini, opencode start it in `openmoat run`'s sandbox? It writes 2 shim(s) to ~/.moat/bin and 2 lines to ~/.zshrc  [y/N/d] y
+✔ sandboxed start  gemini, opencode: shims in ~/.moat/bin; ~/.zshrc puts it first on PATH (backup ~/.zshrc.moat-backup); open a new shell to use it
+```
+
+- **Decoy keys.** Fake keys at names no program loads, beside the files a key hunter
+  looks for: `~/.aws/credentials.bak` (only when `~/.aws` exists), `~/.git-credentials.bak`
+  and `~/.npmrc.bak`. Each is created only where nothing is at that name, owner-only; no
+  real file is read, changed or replaced. The keys look like real ones to a scanner and
+  carry `OpenMoatDecoy`, so you can tell them apart. No real work touches them: a call
+  that reads or changes one, or carries one of their values in a command, a URL, a file it
+  writes or a request through `openmoat proxy`, is denied with rule `canary`, and
+  `openmoat status`, `openmoat doctor` and `openmoat report` flag it. Which files are
+  decoys is recorded in `~/.moat/canaries.json`, which agents may not read.
+- **Sandboxed start.** Offered where `openmoat run` works (macOS 13 and later, Linux) for
+  each hook-only agent it can start (Gemini CLI, OpenCode, Hermes Agent, …; the agents
+  with an OS sandbox of their own already have one). It writes a shim per agent in
+  `~/.moat/bin` that runs `openmoat run` around the real program, both by absolute path,
+  and, on the same yes, two lines at the end of your shell's start-up file (`~/.zshrc`;
+  `~/.bash_profile` on macOS or `~/.bashrc` for bash) that put `~/.moat/bin` first on
+  `PATH`, after backing the file up. For another shell it prints the line to add. Nothing
+  changes how an agent starts until a new shell reads that line. `openmoat status` and
+  `openmoat doctor` say whether typing each agent's command starts it sandboxed in the
+  current shell. Outside a project `openmoat run` refuses to start, as always; the shim
+  names the real program if you need it there.
+
 Hooks run the `openmoat` you ran `openmoat init` with, by its stable path (ADR-016). After
 moving or reinstalling the binary somewhere else, run `openmoat init` again; `openmoat doctor`
 names a hook whose binary is missing or is a different `openmoat`.
+
+An agent can stop running the hook without a word: an update, a setting that turns hooks
+off, or a session started before `init`. When Claude Code, Codex, the Cursor CLI, GitHub
+Copilot CLI, Gemini CLI or Qwen Code wrote sessions since its hook, settings or program
+last changed and none of its calls reached OpenMoat, `openmoat status` and `openmoat
+doctor` warn and say what to do; restart the agent first
+([USAGE.md](USAGE.md#does-the-agent-still-run-openmoats-hook)).
 
 On native Windows, `init` does not turn on Claude Code's sandbox: it runs on macOS,
 Linux and WSL2 only, and Claude Code would not start with it required. The hook still
@@ -167,6 +214,18 @@ applies the policy to Claude Code's tool calls, and `init`, `doctor` and `status
 confinement, run Claude Code and `openmoat` inside WSL2. Codex's sandbox is set up as on
 other systems; Cursor's `sandbox.json` is not written, because Cursor documents its
 sandbox for macOS and Linux only.
+
+On Linux, the sandboxes `init` turns on need what each agent documents: Claude Code
+needs bubblewrap and socat (`sudo apt-get install bubblewrap socat` on Debian and
+Ubuntu, `sudo dnf install bubblewrap socat` on Fedora), and Claude Code, Codex and
+Cursor all need to create user namespaces as you, which Ubuntu 23.10 and later restrict
+through AppArmor by default (`kernel.apparmor_restrict_unprivileged_userns=1`). Each
+agent's documentation gives a different AppArmor fix, and Claude Code's sandbox fails
+under the `bwrap-userns-restrict` profile Codex's suggests, so follow the one `openmoat
+doctor` names for each agent. If an
+agent's commands all fail after `openmoat init`, run `openmoat doctor`: it says which
+agent's sandbox cannot start commands here and why, with the fixes
+([SANDBOX.md](SANDBOX.md#what-each-agents-sandbox-needs-on-linux)).
 
 On native Windows, `openmoat doctor` also shows which of its Windows sandbox modes Codex's
 `config.toml` selects (`[windows] sandbox`, `[features] prefer_mxc`). Codex's MXC and
@@ -361,7 +420,10 @@ the backup `init` took is written back byte for byte; a file `init` created is
 deleted; a file you changed since keeps your changes and only loses OpenMoat's
 entries (its backup stays next to it). The lock stops pinning those files, the proxy
 service is removed if you installed it, and wrapped MCP servers are pointed back at their
-own commands. `~/.moat`
+own commands. The sandboxed-start shims of the agents it uninstalls go, and with the
+last one the two `PATH` lines (the start-up file given back from its backup when the rest
+is unchanged); uninstalling every agent deletes the decoy keys. A shim or decoy you
+changed since `init` wrote it stays, and is named. `~/.moat`
 stays unless you pass `--purge`. Like `openmoat allow`, it runs only from a terminal, and
 the default policy denies it to agents (`kernel-self`).
 
@@ -430,6 +492,71 @@ Then, in a terminal of your own:
    ([USAGE.md](USAGE.md#after-upgrading-openmoat)). Once applied it updates the agents'
    sandboxes as `openmoat sandbox sync` does. `openmoat` alone offers the same at a
    terminal.
+
+### From 0.25.0 to 0.26.0
+
+What you will see, and what to run:
+
+- **Codex, Gemini CLI, Qwen Code and Crush show their hook as out of date** until you run
+  `openmoat init`: the new hook entry blocks the call when `openmoat` is missing or killed
+  (ADR-109). Run `openmoat init` once; Codex then asks you to trust the changed hook in
+  `/hooks`, once.
+- **The first `openmoat init` records the other hooks the agents load** (plugin hooks,
+  helper commands, a project's hook files, `.git/config` programs), so nothing already
+  there is named or blocked; until then `openmoat status` and `openmoat doctor` say they
+  are not recorded yet. One added later is named by `openmoat status` until you run
+  `openmoat hooks accept` ([USAGE.md](USAGE.md#other-hooks-the-agents-run)).
+- **`openmoat policy upgrade` offers the new default rules** (ADR-112): `system-files`,
+  `stops-system`, `credential-egress`, and more paths and patterns in `secrets-paths`,
+  `persistence` and `token-egress`. After it, a listing or recursive read of `/etc` or
+  `/etc/ssh` itself (`ls /etc`, `grep -r … /etc`) needs review, because those folders now
+  hold secret paths; writes in the system's folders and stopping a system process need
+  review too. An upgrade that would move any call toward allow is listed and applied only
+  with `openmoat policy upgrade --accept-widening`; the upgrade from the 0.25.0 default
+  only narrows.
+- **New reviews after private data meets untrusted content** (ADR-113): once a session
+  has read private data (a key, an agent's login, the whole environment) and content
+  someone else may have written (a page, an MCP result, `gh issue view`), a call that can
+  send data out needs review (`lethal-trifecta`), to an allowed host and `git push` too.
+  This needs no upgrade step; sessions that never read private data are unchanged
+  ([USAGE.md](USAGE.md#private-data-untrusted-content-and-a-way-out-the-lethal-trifecta)).
+- **Collect-then-send needs review**: a send of a file the session packed from outside the
+  project, and any send after the session copied private data into a file, are reviewed
+  by the new default rule `staging-egress`, which `openmoat policy upgrade` adds
+  ([USAGE.md](USAGE.md#data-packed-or-copied-before-it-is-sent-staging)).
+- **Rules may test arguments** (`when:`, POLICY.md §2.4). An older binary refuses a
+  policy that uses it, so update every machine before you share such a rule.
+- **`openmoat doctor` shows new rows**: the protection score of each `openmoat run` tier,
+  and the audit log's checkpoint public key. The checkpoint signing key
+  (`~/.moat/audit.key.ed25519`) is made by `openmoat init` or the first
+  `openmoat audit checkpoint`; logs from earlier releases keep verifying as before.
+- **`openmoat status` lists hook-only agents `openmoat run` can confine here** under
+  `Needs your attention`, with the command; Qwen Code and Crush now get one.
+- **`openmoat run` starts on native Windows** (preview, ADR-115) instead of refusing. It
+  refuses writes outside the project, the run's temp directory and `--write` paths, and
+  ends every process the agent started when the run ends; reads and the network are not
+  held by the OS, so it scores at most 55/100 and `sandbox.strict: true` or
+  `require.run: full-boundary` still refuse there. Start the agent's `.exe`, not an npm
+  `.cmd` shim, which is refused. The first run in a folder adds one access-list entry for
+  a SID no account has (`icacls <folder>` lists it) and keeps it, so later runs change
+  nothing ([SANDBOX.md](SANDBOX.md#openmoat-run-on-windows-preview-writes-only)).
+- **Wrapped MCP servers' sampling requests are refused** unless the policy sets
+  `mcp: { allow_sampling: true }`, and a link a server asks you to open must be `https`
+  to a host the policy allows (`openmoat allow --site <host>` for a server's own sign-in
+  page). An older binary refuses a policy that sets `allow_sampling`, so update every
+  machine first ([USAGE.md](USAGE.md#mcp-servers-through-the-gateway)).
+- **Stdio MCP servers are held when their package release changes**: accepting a server
+  started with `npx`, `uvx` or `docker run` also records the release it runs, and another
+  release holds the server until you accept it again. A server accepted before this
+  release is not held for having none recorded; its release is recorded the next time you
+  accept it. Agents that speak MCP
+  2026-07-28 keep a server accepted under the older revision while its text is the same;
+  one whose results name another server is held.
+- **Linux, Claude Code: `openmoat doctor` names another AppArmor fix** (#784). If you
+  loaded Ubuntu's `bwrap-userns-restrict` profile because an earlier release suggested
+  it, Claude Code's sandbox fails under it; doctor now warns and names the profile
+  Claude Code's documentation gives for `/usr/bin/bwrap`
+  ([SANDBOX.md](SANDBOX.md#what-each-agents-sandbox-needs-on-linux)).
 
 ### What can change between 0.x minor releases
 

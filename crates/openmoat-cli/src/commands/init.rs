@@ -3,17 +3,18 @@
 //! What a person sees: a line per agent found with what it would get and the
 //! question (`ask.rs`), then the agents protected, the steps left and how to
 //! undo (`summary.rs`). Each file written, the backups and the lock are shown
-//! with `--verbose` (and in a dry run).
+//! with `--verbose` (and in a dry run). With `--format json` the text is
+//! replaced by one document (`json.rs`); `--hooks-only` writes and pins the
+//! hooks and nothing else.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use openmoat_core::{DEFAULT_POLICY, Policy};
 use openmoat_hosts::Host;
 
 use crate::cli::InitArgs;
-use crate::environment::Snapshot;
 use crate::exit::Code;
 use crate::home::Home;
 use crate::install::{HookLayout, HostConfig, Outcome, Recorded, dir_variable, env_config_dir};
@@ -23,10 +24,14 @@ use crate::report::Style;
 use crate::sandbox::{self, Plan};
 
 mod ask;
+mod hooks;
+mod json;
 mod managed;
 pub(super) mod mcp;
+mod opt_in;
 mod preview;
 mod refuse;
+mod state;
 mod summary;
 #[cfg(test)]
 mod tests;
@@ -36,16 +41,23 @@ use refuse::{refuse_repin, refuse_writable_binary};
 
 pub fn run(args: &InitArgs) -> Result<Code> {
     let dry_run = args.dry_run;
+    let json = json::requested(args)?;
+    let hooks_only = args.hooks_only;
     // A dry run is a list of what would be written: every line of it shows.
-    let verbose = args.verbose || dry_run;
+    let verbose = (args.verbose || dry_run) && !json;
     if args.managed.managed {
         managed::refuse_unless_person()?;
     }
     let home = Home::locate()?;
     let binary = crate::install::hook_binary()?;
     refuse_writable_binary(&home, &binary)?;
-    let snapshot = search_path(&home)?;
-    let mut out = Deferred::default();
+    let snapshot = state::search_path(&home)?;
+    // In JSON the document is the output: the text is not printed.
+    let mut out = if json {
+        Deferred::quiet()
+    } else {
+        Deferred::default()
+    };
     // Each file written, the backups and the lock: shown with `--verbose`.
     let mut detail = if verbose {
         Deferred::default()
@@ -86,7 +98,7 @@ pub fn run(args: &InitArgs) -> Result<Code> {
     let hosts = choose_hosts(&home, args, &binary, &mut out)?;
 
     let mut steps = summary::Steps {
-        update: state(&home, dry_run, unattended, snapshot.as_ref(), &mut detail)?,
+        update: state::write(&home, dry_run, unattended, snapshot.as_ref(), &mut detail)?,
         ..summary::Steps::default()
     };
     if !dry_run {
@@ -99,16 +111,20 @@ pub fn run(args: &InitArgs) -> Result<Code> {
         out: &mut out,
         detail: &mut detail,
     };
+    let mut installed = Vec::with_capacity(hosts.len());
     for host in hosts.iter().copied() {
-        install(
+        installed.push(install(
             &home, &binary, host, unattended, dry_run, &mut steps, &mut files,
-        )?;
+        )?);
     }
-    steps.changed |= sandboxes(&home, &binary, &hosts, dry_run, &mut files)?;
+    if !hooks_only {
+        steps.changed |= sandboxes(&home, &binary, &hosts, dry_run, &mut files)?;
+    }
     if args.managed.managed {
         managed::write(&home, &binary, &hosts, dry_run, files.out)?;
     }
 
+    let mut lock = None;
     if dry_run {
         let detail = &mut *files.detail;
         writeln!(
@@ -116,30 +132,49 @@ pub fn run(args: &InitArgs) -> Result<Code> {
             "would lock             {}",
             home.lock_path().display()
         )?;
-        if args.mcp.mcp_proxy {
+        if !hooks_only && args.mcp.mcp_proxy {
             let sandbox = args.mcp.sandbox();
             super::mcp::wrap_servers(&home, &binary, &hosts, &[], sandbox, true, detail)?;
         }
         writeln!(files.out, "dry run: nothing was written")?;
     } else {
-        let lock = integrity::repin(&home, &binary, integrity::HookPins::Adopt)?;
+        let pins = integrity::HookPins::for_init(hooks_only, &hosts);
+        let written = integrity::repin(&home, &binary, pins)?;
         writeln!(
             files.detail,
             "✔ lock             {} ({} files pinned)",
             home.lock_path().display(),
-            lock.entries.len()
+            written.entries.len()
         )?;
-        let wrap = mcp::Wrap::of(args, unattended);
-        mcp::servers(&home, &binary, wrap, &hosts, unattended, &mut files)?;
+        if !hooks_only {
+            let wrap = mcp::Wrap::of(args, unattended);
+            mcp::servers(&home, &binary, wrap, &hosts, unattended, &mut files)?;
+            hooks::record(&home, &binary, unattended, &mut files)?;
+        }
+        // The opt-in choices (ADR-106), last, for a person only; the lock then
+        // pins what they wrote.
+        if opt_in::asked(args, unattended) && opt_in::ask(&home, &binary, &hosts, files.out)? {
+            integrity::repin(&home, &binary, integrity::HookPins::Adopt)?;
+        }
         let backups = if hosts.is_empty() {
             0
         } else {
             backups(&home, &hosts, files.detail)?
         };
         summary::write(&home, &binary, &hosts, &steps, backups, verbose, files.out)?;
+        lock = Some(written);
     }
     detail.finish()?;
     out.finish()?;
+    if json {
+        let run = json::Outcome {
+            dry_run,
+            hooks_only,
+            steps: &steps,
+            lock: lock.as_ref(),
+        };
+        json::print(&home, &binary, installed, &run)?;
+    }
     Ok(Code::Ok)
 }
 
@@ -158,7 +193,7 @@ fn install(
     dry_run: bool,
     steps: &mut summary::Steps,
     files: &mut Writers<'_>,
-) -> Result<()> {
+) -> Result<json::InstalledHost> {
     let prefix = if dry_run { "would" } else { "✔" };
     let config = unattended::config(home, host, unattended)?;
     let replaced = match config.layout {
@@ -184,15 +219,17 @@ fn install(
         binary.display(),
         config.guard(binary).shell_args(host.id())
     )?;
-    if let Some(backup) = replaced.filter(|_| outcome != Outcome::Unchanged) {
+    let backup_path = replaced
+        .filter(|_| outcome != Outcome::Unchanged)
+        .map(|backup| backup.display().to_string());
+    if let Some(backup) = &backup_path {
         let verb = if dry_run { "would move" } else { "moved" };
         writeln!(
             files.out,
-            "! {:<16} {verb} your own hook {} to {}: {} runs one file there, so yours does \
+            "! {:<16} {verb} your own hook {} to {backup}: {} runs one file there, so yours does \
              not run while OpenMoat is installed; `openmoat uninstall` puts it back",
             host.display_name(),
             config.settings_path.display(),
-            backup.display(),
             host.display_name()
         )?;
     }
@@ -211,7 +248,13 @@ fn install(
         )?;
         steps.trust.push((host.display_name(), note));
     }
-    Ok(())
+    let done = json::Done {
+        outcome: verb,
+        changed: outcome != Outcome::Unchanged,
+        backup_path,
+        trust_note: trust,
+    };
+    Ok(json::InstalledHost::new(&config, done))
 }
 
 /// Which checks guard `init`'s re-pin of an existing lock.
@@ -234,119 +277,6 @@ fn repin_checks(lock_exists: bool, interactive: bool) -> RepinChecks {
         agent: lock_exists,
         drift: lock_exists && !interactive,
     }
-}
-
-/// OpenMoat's own state: the directory, the default policy (kept when there is
-/// one), the audit log and the search-path snapshot `snapshot` (the recorded
-/// one kept when `unattended` or when [`search_path`] found nothing); the
-/// update a kept policy can take from this release's default.
-fn state(
-    home: &Home,
-    dry_run: bool,
-    unattended: bool,
-    snapshot: Option<&Snapshot>,
-    out: &mut Deferred,
-) -> Result<Option<String>> {
-    let prefix = if dry_run { "would" } else { "✔" };
-    if !dry_run {
-        home.ensure()?;
-    }
-    writeln!(out, "{prefix} state directory  {}", home.root().display())?;
-
-    let policy_path = home.policy_path();
-    let wrote_policy = if dry_run {
-        !policy_path.exists()
-    } else {
-        home.ensure_policy()?
-    };
-    let mut update = None;
-    if wrote_policy {
-        writeln!(
-            out,
-            "{prefix} policy           {} (defaults v1)",
-            policy_path.display()
-        )?;
-    } else {
-        writeln!(out, "✔ policy           {} (kept)", policy_path.display())?;
-        update = crate::upgrade::available(home);
-        if let Some(update) = &update {
-            writeln!(
-                out,
-                "! policy update    {update}: `openmoat policy upgrade` shows them and asks"
-            )?;
-        }
-    }
-
-    // The log and its key (ADR-101), so the first call is keyed.
-    let kept = if dry_run {
-        None
-    } else {
-        crate::audit_key::open(home)?
-    };
-    writeln!(
-        out,
-        "{prefix} audit log        {}",
-        home.audit_path().display()
-    )?;
-    if let Some(kept) = kept {
-        writeln!(
-            out,
-            "  a new audit log starts with a new audit key; the previous key is kept as {} \
-             (it still checks a log you moved aside)",
-            kept.display()
-        )?;
-    }
-
-    if dry_run {
-        writeln!(
-            out,
-            "would environment      {}",
-            home.environment_path().display()
-        )?;
-    } else if unattended && home.environment_path().is_file() {
-        writeln!(
-            out,
-            "· environment      {} kept: no person at a terminal to record a new search path",
-            home.environment_path().display()
-        )?;
-    } else if let Some(snapshot) = snapshot {
-        snapshot.save(&home.environment_path())?;
-        writeln!(
-            out,
-            "✔ environment      {} ({} dirs, {} programs pinned)",
-            home.environment_path().display(),
-            snapshot.path.len(),
-            snapshot.programs.len()
-        )?;
-    } else {
-        writeln!(
-            out,
-            "· environment      {} kept",
-            home.environment_path().display()
-        )?;
-    }
-    Ok(update)
-}
-
-/// This shell's search path, as `init` records it; `None` when it finds none
-/// of [`PINNED_PROGRAMS`](crate::environment::PINNED_PROGRAMS) (an empty or
-/// broken `PATH`, a service's bare environment) and a snapshot is recorded
-/// already, which is then kept. Without one it is refused: a snapshot that
-/// pins nothing would check no program the guard resolves, and `init` would
-/// say it succeeded.
-fn search_path(home: &Home) -> Result<Option<Snapshot>> {
-    let snapshot = Snapshot::capture();
-    if !snapshot.programs.is_empty() {
-        return Ok(Some(snapshot));
-    }
-    if home.environment_path().is_file() {
-        return Ok(None);
-    }
-    bail!(
-        "this shell's PATH finds none of the programs OpenMoat pins (sh, git, curl, …), so \
-         there is no search path to record and nothing was changed; run `openmoat init` from a \
-         normal shell"
-    )
 }
 
 /// The backups `init` made of `hosts`' files, and how to undo; how many.

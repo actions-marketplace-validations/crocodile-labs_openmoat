@@ -97,6 +97,19 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         config_file: "hooks/openmoat.json",
         hooks: HOOKS,
         hook_file: HookLayout::Entries(&hook_file::Copilot),
+        // Each session's events are `session-state/<session id>/events.jsonl`,
+        // which `copilot --resume` reads back. Source: `session-state/` in
+        // https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference
+        // (under `COPILOT_HOME` when it is set).
+        liveness: Some(crate::Liveness {
+            settings: &[],
+            sessions: crate::Sessions::Known(&[crate::Activity::new(&[
+                "session-state",
+                crate::Activity::ANY,
+            ])
+            .ending("events.jsonl")]),
+            started: None,
+        }),
         ..InstallSpec::BASE
     }),
     // `mcp-config.json` in the configuration directory, and a project's
@@ -111,6 +124,7 @@ pub(crate) static SPEC: HostSpec = HostSpec {
             (".github/mcp.json", &mcp::JsonOrBare),
         ],
         tool_names: &mcp::Dashed,
+        call_ids: None,
         auto_start: None,
     }),
     // A repository's settings are merged over the user's, and

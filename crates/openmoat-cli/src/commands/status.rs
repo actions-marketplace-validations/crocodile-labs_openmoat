@@ -20,6 +20,7 @@ use crate::sandbox::Plan;
 use crate::{protection, render, time};
 
 mod agents;
+mod foreign_hooks;
 
 /// How many of the newest audit events `status` lists.
 const RECENT_EVENTS: usize = 5;
@@ -63,6 +64,7 @@ pub fn run(args: &StatusArgs) -> Result<Code> {
     }
     healthy &= lock(&mut shown, &home, &binary)?;
     healthy &= mcp_line(&mut shown, &home, &binary);
+    healthy &= foreign_hooks::line(&mut shown, &home, &binary);
     // Warnings that leave `healthy` alone: servers that start outside what
     // OpenMoat checks are the person's choice to wrap (ADR-049).
     for line in mcp_outside(&home, &binary) {
@@ -92,6 +94,7 @@ pub fn run(args: &StatusArgs) -> Result<Code> {
     }
     let audit = audit(&mut shown, &home)?;
     healthy &= audit.is_some();
+    opt_in(&mut shown, &home);
 
     // Only when a policy asks for it, so nothing changes without the setting.
     mcp_servers(&mut shown, &home, &binary);
@@ -108,13 +111,29 @@ pub fn run(args: &StatusArgs) -> Result<Code> {
     let agents = protection::report(&home, &binary)?;
     // An agent below the level the policy requires has every call denied.
     healthy &= agents.iter().all(protection::Protection::meets_required);
+    // Hook-only agents `openmoat run` can confine here (ADR-108): warnings.
+    let shims = crate::start::Record::load(&home).unwrap_or_default();
+    let shimmed = |id: &str| shims.shims.iter().any(|s| s.host == id);
+    let mut confined_by_row = Vec::new();
+    for row in crate::report::hook_only_rows(&agents, &shimmed) {
+        confined_by_row.extend(
+            agents
+                .iter()
+                .filter(|a| a.name == row.label)
+                .map(|a| a.host),
+        );
+        shown.attention.push(row);
+    }
     let table = crate::report::agent_table(&agents, &shown.attention, false);
     let mut out = io::stdout().lock();
     let mut printer = Printer::stdout(&mut out);
     printer.title("status")?;
     printer.attention(&shown.attention)?;
     let mut table = table;
-    table.rows.extend(crate::report::os_sandbox_rows(&agents));
+    table.rows.extend(crate::report::os_sandbox_rows_but(
+        &agents,
+        &confined_by_row,
+    ));
     table.rows.append(&mut shown.agents);
     printer.agents(&table)?;
     printer.heading("OpenMoat")?;
@@ -141,6 +160,9 @@ fn report(home: &Home, binary: &Path, update: Option<&String>) -> Result<serde_j
     let drift: Vec<String> = Lock::load(&home.lock_path())
         .map(|lock| lock.verify().iter().map(ToString::to_string).collect())
         .unwrap_or_default();
+    let (plugins, hooks): (Vec<_>, Vec<_>) = crate::heartbeat::all(home, binary)
+        .into_iter()
+        .partition(|one| crate::heartbeat::has_plugin(one.of));
     Ok(serde_json::json!({
         "agents": protection::report(home, binary)?,
         "run_boundary": protection::run_boundary(home, binary),
@@ -151,12 +173,14 @@ fn report(home: &Home, binary: &Path, update: Option<&String>) -> Result<serde_j
         )
         .map(|found| found.servers)
         .unwrap_or_default(),
-        "plugins": crate::heartbeat::all(home, binary),
+        "plugins": plugins,
+        "hooks": hooks,
         "hook_warnings": hook_warnings(home, binary)?,
         "policy_update": update,
         "lock_drift": drift,
         "mcp_changes": mcp_changes(home, binary).unwrap_or_default(),
         "mcp_outside": mcp_outside(home, binary),
+        "foreign_hooks": foreign_hooks::json(home, binary),
         "project_settings": crate::project_settings::warnings_here(home)
             .into_iter()
             .map(|warning| warning.text)
@@ -166,7 +190,22 @@ fn report(home: &Home, binary: &Path, update: Option<&String>) -> Result<serde_j
             .map(|warning| warning.text)
             .collect::<Vec<_>>(),
         "repo_git_config": crate::project_settings::git_config::warnings_here(),
+        "opt_in": crate::opt_in::rows(home, time::now_ms()),
+        "own_sandbox_linux": agents::own_sandbox_linux(home, binary),
     }))
+}
+
+/// The opt-in choices of `openmoat init` (ADR-106): a decoy touched is an
+/// alert first in the list, an agent that starts outside its shim a warning;
+/// neither changes the exit code, which says whether OpenMoat is set up.
+fn opt_in(shown: &mut Shown, home: &Home) {
+    for row in crate::opt_in::rows(home, time::now_ms()) {
+        match (row.alert, row.attention) {
+            (true, _) => shown.needs(Mark::Broken, row.label, row.text),
+            (false, true) => shown.needs(Mark::Attention, row.label, row.text),
+            (false, false) => shown.state(Mark::Ok, row.label, row.text),
+        }
+    }
 }
 
 /// Advisory trust diagnostics, separate from protection levels and exit codes.

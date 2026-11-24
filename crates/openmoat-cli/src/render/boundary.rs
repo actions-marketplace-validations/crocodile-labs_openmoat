@@ -4,7 +4,9 @@
 
 use std::io::{self, Write};
 
-use openmoat_core::boundary::{EffectiveBoundary, NetworkMode, Restriction, ToolToken, Weaker};
+use openmoat_core::boundary::{
+    EffectiveBoundary, NetworkMode, Restriction, RunEnvironment, ToolToken, Weaker,
+};
 
 /// The record as lines, each without a newline.
 pub fn lines(record: &EffectiveBoundary) -> Vec<String> {
@@ -25,6 +27,10 @@ pub fn lines(record: &EffectiveBoundary) -> Vec<String> {
         NetworkMode::Namespace => "a network namespace; the proxy is the only way out",
         NetworkMode::PortOnly => "port only: any host on the proxy's port",
         NetworkMode::Profile => "the Seatbelt profile allows the proxy's address alone",
+        NetworkMode::ProxyVariables => {
+            "the proxy variables only: nothing in the OS holds the network, so a program that \
+             ignores HTTP_PROXY connects directly"
+        }
     };
     lines.push(format!("  network: {network}"));
     if let Some(landlock) = &record.landlock {
@@ -45,8 +51,48 @@ pub fn lines(record: &EffectiveBoundary) -> Vec<String> {
         ToolToken::UnknownAgent => "no agent OpenMoat knows".to_owned(),
     };
     lines.push(format!("  relay token: {token}"));
+    if let Some(environment) = &record.environment {
+        lines.extend(environment_lines(environment));
+    }
     lines.push("  restriction             available configured applied tested".to_owned());
     lines.extend(record.restrictions.iter().map(row));
+    if let Some(score) = &record.score {
+        lines.push(format!("  protection score: {}", score.line()));
+    }
+    lines
+}
+
+/// What of the inherited environment passes (ADR-105), names only.
+fn environment_lines(environment: &RunEnvironment) -> Vec<String> {
+    let names = |list: &[String]| {
+        if list.is_empty() {
+            "none".to_owned()
+        } else {
+            list.iter()
+                .map(|n| super::clean(n).to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    };
+    let how = if environment.scrubbed {
+        "scrubbed: only the allowlist passes"
+    } else {
+        "inherited: every variable passes"
+    };
+    let mut lines = vec![format!(
+        "  environment: {how} ({})",
+        super::clean(&environment.why)
+    )];
+    if environment.scrubbed {
+        lines.push(format!("    passed: {}", names(&environment.passed)));
+        lines.push(format!("    withheld: {}", names(&environment.withheld)));
+    }
+    if !environment.brokered.is_empty() {
+        lines.push(format!(
+            "    placeholder instead of the value: {}",
+            names(&environment.brokered)
+        ));
+    }
     lines
 }
 
@@ -105,6 +151,8 @@ mod tests {
                 Restriction::planned(Mechanism::NetworkNamespace, false, false),
             ],
             launch: None,
+            environment: None,
+            score: None,
         };
         let shown = lines(&record).join("\n");
         for expected in [
@@ -117,5 +165,40 @@ mod tests {
         ] {
             assert!(shown.contains(expected), "{expected}:\n{shown}");
         }
+        assert!(!shown.contains("environment"), "{shown}");
+    }
+
+    #[test]
+    fn the_environment_names_what_passes_and_what_is_withheld() {
+        let environment = RunEnvironment {
+            scrubbed: true,
+            why: "`openmoat run --scrub-env`".to_owned(),
+            passed: vec!["HOME".to_owned(), "PATH".to_owned()],
+            withheld: vec!["AWS_SECRET_ACCESS_KEY\u{1b}[31m".to_owned()],
+            brokered: vec!["GITHUB_TOKEN".to_owned()],
+        };
+        let shown = environment_lines(&environment).join("\n");
+        for expected in [
+            "environment: scrubbed: only the allowlist passes (`openmoat run --scrub-env`)",
+            "passed: HOME, PATH",
+            "withheld: AWS_SECRET_ACCESS_KEY",
+            "placeholder instead of the value: GITHUB_TOKEN",
+        ] {
+            assert!(shown.contains(expected), "{expected}:\n{shown}");
+        }
+        assert!(!shown.contains('\u{1b}'), "{shown}");
+        let inherited = RunEnvironment {
+            scrubbed: false,
+            why: "the default (`sandbox.env: inherited`)".to_owned(),
+            passed: Vec::new(),
+            withheld: Vec::new(),
+            brokered: Vec::new(),
+        };
+        let shown = environment_lines(&inherited).join("\n");
+        assert!(
+            shown.contains("inherited: every variable passes"),
+            "{shown}"
+        );
+        assert!(!shown.contains("withheld"), "{shown}");
     }
 }

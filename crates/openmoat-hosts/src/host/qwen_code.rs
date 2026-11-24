@@ -78,12 +78,14 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         defer_is_review_on_no_prompt: false,
         ..Reviews::BASE
     },
-    on_hook_failure: "runs the call when the hook is missing, cannot start, crashes, exits \
-         non-zero other than 2 without a decision, prints JSON it cannot read, or times out \
-         (600 s as `openmoat init` writes it); Qwen Code has no setting that blocks a failed \
-         hook",
+    on_hook_failure: "blocks the call when `openmoat` is missing, cannot start or is killed \
+         (the hook command exits 2 itself then, ADR-109); runs it when the hook times out \
+         (600 s as `openmoat init` writes it; the guard denies on its own after 30 s); Qwen \
+         Code has no setting that blocks a failed hook",
+    // Exit 2 blocks (the hooks page, `hookRunner.ts`); the entry's command
+    // turns any status but the guard's 0 or 2 into it (`hook_file.rs`).
     hook_failure: crate::HookFailure {
-        fails: crate::FailureOutcome::Runs,
+        fails: crate::FailureOutcome::Blocks,
         times_out: crate::FailureOutcome::Runs,
         timeout_s: Some(600),
         turned_off_by: "`disableAllHooks: true` in a settings file (whether a project's turns \
@@ -97,7 +99,7 @@ pub(crate) static SPEC: HostSpec = HostSpec {
     },
     gaps: "preview: built from Qwen Code's documentation and source, not yet run against a \
          real `qwen`; no OS sandbox from OpenMoat (Qwen Code's own `--sandbox` is the \
-         person's to turn on); a hook that fails or times out lets the call run; a \
+         person's to turn on); a hook that times out lets the call run; a \
          project's `.qwen/settings.json` may turn hooks off (`disableAllHooks`) or add a \
          hook that rewrites a call's arguments (`updatedInput`), once the person approves \
          it or trusts the folder (`openmoat status` and `doctor` warn about one); \
@@ -118,6 +120,22 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         hooks: HOOKS,
         hook_file: HookLayout::Entries(&hook_file::Qwen),
         versions: Some(VERSIONS),
+        // Each session is recorded as `projects/<project>/chats/<session id>.jsonl`,
+        // which `--resume` reads back, from 0.13.0 (the first release with
+        // `PreToolUse`) on: `ensureConversationFile` in
+        // https://github.com/QwenLM/qwen-code/blob/v0.13.0/packages/core/src/services/chatRecordingService.ts
+        // and `getProjectDir` in `config/storage.ts`. `QWEN_RUNTIME_DIR` moves
+        // `projects/` out of the configuration directory: fewer warnings there.
+        liveness: Some(crate::Liveness {
+            settings: &[],
+            sessions: crate::Sessions::Known(&[crate::Activity::new(&[
+                "projects",
+                crate::Activity::ANY,
+                "chats",
+            ])
+            .ending(".jsonl")]),
+            started: None,
+        }),
         ..InstallSpec::BASE
     }),
     // `mcpServers` in the user and the project `settings.json` (the settings
@@ -127,6 +145,7 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         user_reader: &McpServersJson,
         project_files: &[(".qwen/settings.json", &McpServersJson)],
         tool_names: &Prefixed,
+        call_ids: None,
         auto_start: None,
     }),
     // A project's `.qwen/settings.json` is merged over the person's, and its
@@ -157,8 +176,15 @@ pub(crate) static SPEC: HostSpec = HostSpec {
     tool_token: crate::ToolToken::NotWithheld {
         why: "how Qwen Code starts tool commands and hooks was not checked",
     },
-    run: crate::RunFacts::Unknown {
-        why: "which directories `qwen` writes outside the project was not checked",
+    // Outside the project Qwen Code writes its own directory alone: settings,
+    // its sign-in, chat recordings, `file-history/` for `/rewind` and its
+    // locales are all under `~/.qwen` (`QWEN_HOME`), by the settings reference
+    // (`docs/users/configuration/settings.md`); the system files under
+    // `/etc/qwen-code` are only read (ADR-108).
+    run: crate::RunFacts::Known {
+        program: "qwen",
+        args: &[],
+        writes: &[crate::RunWrite::ConfigDir],
     },
     weekly: weekly::WEEKLY,
     hook_off: hook_off::HOOK_OFF,
@@ -166,6 +192,12 @@ pub(crate) static SPEC: HostSpec = HostSpec {
         why: "Qwen Code's extensions (`qwen extensions install`) can carry hooks, but which \
               manifest field holds them was not verified; `openmoat init` writes the hook into \
               `settings.json`",
+    },
+    // The project's own files that hold hooks laid out as the hook file
+    // (ADR-109).
+    ledger: crate::Ledger {
+        project_hook_files: &["settings.json"],
+        ..crate::Ledger::BASE
     },
     ..HostSpec::BASE
 };

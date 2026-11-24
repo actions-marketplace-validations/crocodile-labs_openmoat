@@ -79,7 +79,13 @@ pub fn plan(plan: Plan<'_>) -> EffectiveBoundary {
                 chosen: false,
                 why: why.clone(),
             });
-            NetworkMode::PortOnly
+            // Windows holds no network at all (the proxy variables only);
+            // elsewhere the weaker network is Landlock's port rule.
+            if platform::NETWORK == NetworkMode::ProxyVariables {
+                NetworkMode::ProxyVariables
+            } else {
+                NetworkMode::PortOnly
+            }
         }
         None => platform::NETWORK,
     };
@@ -102,7 +108,7 @@ pub fn plan(plan: Plan<'_>) -> EffectiveBoundary {
             enforcement: None,
         },
     });
-    EffectiveBoundary {
+    let mut record = EffectiveBoundary {
         version: VERSION,
         os: std::env::consts::OS.to_owned(),
         requested,
@@ -120,11 +126,16 @@ pub fn plan(plan: Plan<'_>) -> EffectiveBoundary {
             plan.kernel,
         ),
         launch: None,
-    }
+        environment: None,
+        score: None,
+    };
+    record.rescore();
+    record
 }
 
 /// `openmoat run --print-boundary`: the record a run would start with,
-/// from the same choices, on standard output as JSON or text; nothing starts.
+/// from the same choices, on standard output as JSON or text, with which
+/// inherited variables it would pass on (ADR-105); nothing starts.
 /// The refusals a run makes before it builds its sandbox are made here too,
 /// with the same words and exit: no sandbox on this system, a kernel below
 /// Landlock's floor, a port-only network under `--netns=require` or a policy
@@ -158,7 +169,8 @@ pub fn print_plan(
         .cloned()
         .chain(args.writes.iter().map(|w| super::resolved(w)))
         .collect();
-    let record = plan(Plan {
+    let policy = home.load_policy()?;
+    let mut record = plan(Plan {
         asked: Asked::of(args),
         tier,
         port_only: port_only.clone(),
@@ -166,14 +178,43 @@ pub fn print_plan(
         token: tool_shell::token(agent_host, tool_shell::would_wrap(&roots)?),
         port: None,
         // Only the Lightweight tier without a namespace reads the setting.
-        project_top_open: port_only.is_some()
-            && home.load_policy()?.project_top() == ProjectTop::Writable,
+        project_top_open: port_only.is_some() && policy.project_top() == ProjectTop::Writable,
     });
+    record.environment = Some(super::planned_environment(
+        &policy,
+        agent_host,
+        args,
+        (strict, ctx.project.as_deref()),
+    )?);
     match args.format {
         Format::Json => render::json(&record)?,
         Format::Text => render::boundary::write(&mut std::io::stdout().lock(), &record)?,
     }
+    // Printed first, so the person sees what is missing; then the same
+    // refusal a start would make.
+    refuse_incomplete(policy.sandbox_strict(), &record)?;
     Ok(Code::Ok)
+}
+
+/// Under `sandbox.strict: true` (ADR-108), refuse a run whose protection
+/// score is not complete: before the start from the plan, after it from what
+/// the launch confirmed. Fail closed: no score is an incomplete one.
+pub fn refuse_incomplete(strict: bool, record: &EffectiveBoundary) -> Result<()> {
+    if !strict {
+        return Ok(());
+    }
+    match &record.score {
+        Some(score) if score.complete() => Ok(()),
+        Some(score) => bail!(
+            "`sandbox.strict: true` in your policy: `openmoat run` starts only with every kernel \
+             feature of its protection score in force, and this run has {}; nothing starts",
+            score.line()
+        ),
+        None => bail!(
+            "`sandbox.strict: true` in your policy: this run's protection score is unknown, so \
+             nothing starts"
+        ),
+    }
 }
 
 /// `--verbose`: the record on standard error before the agent starts.
@@ -190,14 +231,23 @@ pub fn show(record: &EffectiveBoundary) -> Result<()> {
 pub fn launched(
     home: &Home,
     (session, cwd): (&str, &str),
-    record: &mut EffectiveBoundary,
+    (record, strict): (&mut EffectiveBoundary, bool),
     check: Option<LaunchCheck>,
 ) -> Result<()> {
     if let Some(check) = check {
         record.launched(check);
+    } else {
+        record.rescore();
     }
     fail_row_for_test()?;
-    let missing = record.missing();
+    let mut missing = record.missing();
+    // Strict (ADR-108): what the score lacks after the start stops the agent too.
+    if strict && let Some(score) = record.score.as_ref().filter(|s| !s.complete()) {
+        missing.push(format!(
+            "`sandbox.strict: true` needs its whole protection score: {}",
+            score.line()
+        ));
+    }
     let verdict = if missing.is_empty() {
         Verdict::Allow
     } else {
