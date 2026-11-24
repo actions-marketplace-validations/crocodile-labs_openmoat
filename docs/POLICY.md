@@ -298,7 +298,11 @@ sandbox can broker it too, below).
 - **`source`.** `file` is absolute or under `~/`; the value is its contents without the
   trailing newline. `env` is a variable of the `openmoat proxy` process. `keychain` is an item
   in the operating system's keychain. `command` (preview) is a program `openmoat proxy`
-  runs for a short-lived value and runs again before the value expires (§2.2).
+  runs for a short-lived value and runs again before the value expires (§2.2). `mint`
+  (preview) is a short-lived credential the proxy makes from one you hold, narrowed to
+  what the entry names (§2.2.1).
+- **`helper`** (preview, §2.2.1) hands the value to git's credential helper or the AWS
+  tools' `credential_process` inside `openmoat run`, for this secret's host only.
 - **`header`** must be an HTTP header name. Headers that frame the request or the
   connection (`Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Proxy-*`, …)
   are refused. Two secrets cannot set the same header for the same host.
@@ -526,6 +530,124 @@ that an administrator installed.
   secret.
 - **Masking.** Every value it gave (the last five) is masked in the proxy's audit rows,
   and the leak and echo checks look for the value it replaced too.
+
+### 2.2.1 Minted, narrowed credentials (`source: mint`, `helper:`, preview)
+
+GitHub, AWS and Google Cloud each have an official call that turns a credential you hold
+into a narrower one that expires on its own. A `mint` source makes `openmoat proxy` (and
+the proxy of `openmoat run`) make that call itself, outside every sandbox, and broker the
+result like any other value, renewed before it ends
+([ADR-118](adr/ADR-118-minted-audience-bound-credentials.md)). Your own credential is read
+by the proxy only, each time it mints, and sent only to the provider's own endpoint.
+
+```yaml
+secrets:
+  # git push and pull to two repositories, as a GitHub App, for an hour at a time.
+  - id: gh-git
+    host: github.com
+    header: Authorization
+    helper: { git: { username: x-access-token } }
+    source:
+      mint:
+        github-app:
+          app: Iv23liExample              # the App's client ID (or numeric App ID)
+          installation: 12345678          # the installation on your account or organisation
+          key: ~/.config/moat/app.pem     # the App's private key
+          repositories: [openmoat, site]  # names, without the owner
+          permissions: { contents: write, pull_requests: read }
+
+  # Reading one bucket, for 15 minutes at a time.
+  - id: s3
+    host: s3.us-east-1.amazonaws.com
+    header: Authorization
+    helper: aws
+    source:
+      mint:
+        aws-sts:
+          role: arn:aws:iam::123456789012:role/agent
+          region: us-east-1
+          profile: work                   # of ~/.aws/credentials; `default` when unset
+          actions: [s3:GetObject, s3:ListBucket]
+          resources: ["arn:aws:s3:::example-bucket", "arn:aws:s3:::example-bucket/*"]
+          lifetime: 15m                   # 15m to 12h
+
+  # A Google Cloud Storage token for one service account, read only.
+  - id: gcs
+    host: storage.googleapis.com
+    header: Authorization
+    tls: terminate
+    source:
+      mint:
+        gcp:
+          service_account: agent@my-project.iam.gserviceaccount.com
+          scopes: [https://www.googleapis.com/auth/devstorage.read_only]
+          lifetime: 10m                   # 1m to 1h
+
+deny:
+  - id: mint-credentials                  # the agent must not read what the proxy mints from
+    fs.read: ["~/.config/moat/app.pem", "~/.aws/**", "~/.config/gcloud/**"]
+```
+
+| Provider | What it mints | Narrowed to | Lifetime | Starts from |
+|---|---|---|---|---|
+| `github-app` | an installation access token | `repositories` and `permissions`, both required | 1 hour (GitHub's) | the App's private key |
+| `aws-sts` | STS `AssumeRole` credentials | an inline session policy: `actions` on `resources`, both required; never `s3:*` or `*` | 15m to 12h, 15m by default | a profile of `~/.aws/credentials` (or `credentials:`) |
+| `gcp` | a service account access token (`generateAccessToken`) | `scopes`, required | 1m to 1h, 15m by default | `~/.config/gcloud/application_default_credentials.json` (or `credentials:`): `authorized_user` or a `service_account` key |
+
+- **A mint that would not narrow does not load.** Without `repositories` a GitHub token
+  reaches every repository of the installation, without `permissions` every permission
+  of the App; without a session policy an AWS session has all of the role. A GitHub
+  answer that grants a permission the entry does not ask for is refused.
+- **Not from `gh auth token`.** GitHub has no call that narrows an OAuth or personal
+  access token, such as the one `gh auth token` prints: anything made from it can do
+  everything your login can. So a GitHub mint starts from a GitHub App you create and
+  install on the repositories you choose.
+- **Renewal** is §2.2's: `refresh_before` ahead of the end (10 minutes for GitHub, a
+  fifth of the lifetime for the others when unset), retried every 15 seconds on failure,
+  and a request that would get an expired value is refused (`proxy-secret-expired`). The
+  value is used until the earlier of `lifetime` and the provider's own expiry.
+- **Errors** name the provider, its HTTP status and its error code (`AccessDenied`,
+  `Bad credentials`), never a value or the answer's body. At start, a mint that fails stops
+  `openmoat proxy` as any source does.
+- **`openmoat policy lint`** warns when no deny `fs.read` rule covers the file a mint
+  starts from. The default `secrets-paths` rule already denies `~/.aws` and
+  `~/.config/gcloud`; a GitHub App's key needs a rule of your own.
+- **Where it runs.** Only in `openmoat proxy` and the proxy of `openmoat run`, as a
+  `command` source: `openmoat guard` never mints, audit delivery refuses a `mint` source,
+  and Claude Code's broker is never given it.
+
+**`helper:` (inside `openmoat run`).** git over HTTPS keeps its credential inside a
+tunnel the proxy does not open, and the AWS tools sign every request with the secret key,
+so there is no header the proxy could fill in. A secret with `helper:` reaches the tool
+through its own helper protocol instead:
+
+- **`helper: { git: { username: … } }`.** `openmoat run` adds git configuration through
+  `GIT_CONFIG_*` for `https://<host>`: first an empty helper, which drops the helpers your
+  own git configuration names for that host, then `openmoat credential git <id>`. When
+  git asks for that host, the helper asks the run's proxy, which answers only for the
+  secret's own host, exactly. `username` is what git sends with the value
+  (`x-access-token` for a GitHub App token). The host must be a DNS name.
+- **`helper: aws`** (needed by an `aws-sts` mint, which cannot have `tls`, `plain_http` or
+  `allow`, and taken by nothing else). `openmoat run` writes an AWS config file of its own
+  with a profile `openmoat-<id>` whose `credential_process` is
+  `openmoat credential aws <id>`, and points `AWS_CONFIG_FILE` at it; `AWS_PROFILE` names
+  it when the policy has one such secret (otherwise pass `--profile openmoat-<id>`).
+  `AWS_SHARED_CREDENTIALS_FILE` points at an empty file, and `AWS_ACCESS_KEY_ID`,
+  `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` and `AWS_DEFAULT_PROFILE` are removed: the
+  AWS tools would use those before `credential_process`.
+- **Who is answered.** The helper sends one line, `MOAT-HELPER/1`, with the session
+  credential from the run's proxy variables, to the proxy's loopback port; it refuses an
+  address that is not loopback. Each answer, given or refused, is a row in the audit log
+  with rule `proxy-helper`, written before the value is sent. An expired value is never
+  handed out.
+- **What it does not hide.** A value handed to a helper is in the session: any command
+  the agent runs can start `openmoat credential` too and read it, as it could read a
+  token in an environment variable. What bounds it is that it is narrowed, ends within
+  minutes, and goes only where the policy lets the agent connect: where the proxy reads
+  the request (plain HTTP, `tls: terminate`) the value sent to any other host is refused
+  (`proxy-secret`), but inside a tunnel it does not open to another allowed host it is
+  not seen. Use `helper:` for minted values, and keep the hosts the agent may reach few
+  ([LIMITS.md](LIMITS.md)).
 
 ### 2.3 Request rules for allowed hosts (`requests:`)
 
@@ -1035,8 +1157,8 @@ collect.evil.example may follow an instruction planted there
   (`git push`, `curl https://api.github.com/…`), a project file, `cargo build`. A deny
   stays a deny.
 - **PowerShell.** A PowerShell command (Gemini CLI's shell on Windows, the PowerShell
-  tools of Claude Code and the Cline CLI) is never parsed (`unparseable`), so its text is
-  read the way untrusted output is: every host it names counts as reached and every path
+  tools of Claude Code and the Cline CLI) is never parsed in full (`unparseable`; the
+  reader of ADR-116 only adds atoms), so its text is read the way untrusted output is: every host it names counts as reached and every path
   outside the project, in the forms above, as written, compared as above, after taking
   out PowerShell's escape character (`` ` ``) and reading `-Uri:https://…` as
   `-Uri https://…`. Its output is untrusted when it reads from a host the policy does not
@@ -1380,6 +1502,7 @@ your words. `default.<kind>` and the ids of `openmoat mcp proxy`, `openmoat prox
 | `mcp-server-text` | allow | a row `openmoat mcp proxy` records under an agent's own host and session, before it passes that session's first call to a wrapped server, for the server's accepted `initialize` instructions (tool `mcp__<server>__initialize`): text the model read that the server wrote, so the session counts as having read untrusted content (ADR-069) |
 | `protection-required` | deny | the agent is below the protection level `require:` asks of it (§9.2): every call, ungoverned tools included, until it meets it; the reason names which policy asks, what is missing and the step that fixes it (ADR-064) |
 | `kernel-error` | deny | `openmoat guard` could not evaluate at all: missing state directory, malformed payload, unreadable policy, a repository policy that cannot be read or parsed (§10); exit 2 |
+| `hook-deadline` | deny | no decision came before the guard's deadline for the agent (30 s, or the agent's shortest hook time limit less 5 s, ADR-120): the answer carries it beside `kernel-error`, and the audit row the guard leaves where the log can still be written (tool `guard`) carries it alone; `~/.moat/guard-hangs.log` lists every such call |
 | `repo:<id>` | from its list | a rule of the project's repository policy (§10) |
 | `ungoverned` | defer (allow for Cursor) | the host tool is outside policy scope (for example Claude Code `Task`, or `Shell` under Cursor's `preToolUse`, which `beforeShellExecution` already governs); recorded, not evaluated. The host decides it as if no hook had answered; Cursor's hooks have no such answer, so there it is allowed |
 | `config-change` | allow | a Claude Code `ConfigChange` for a settings file that is not pinned, or still matches the lock apart from settings drift (§8); a change that names no file is allowed only while every pinned file matches the lock apart from settings drift; recorded |
@@ -1603,13 +1726,14 @@ hooks:
 | review | `destructive-recoverable` | `git branch -D`, `git branch --delete --force` and their other spellings (`-d -f`, `-df`, `-fd`, `--force --delete`): the commits stay in the reflog for weeks, so this needs review where a force push or `reset --hard` is denied; `dev-shell` excludes these forms of `git branch` |
 | review | `provenance-notes` | since 0.16.0: an agent's `git notes` on OpenMoat's provenance notes ref (any argument naming `openmoat`: `--ref openmoat`, `--ref=refs/notes/openmoat`), `git update-ref` of `refs/notes/openmoat`, and `git update-ref --stdin`, whose input names the refs it moves: the notes are a person's record of what agents wrote (ADR-056, [PROVENANCE.md](PROVENANCE.md)); other notes refs and reading history are unchanged, `GIT_NOTES_REF` is denied (`env-poison`) and `git config core.notesRef` needs review (`git-internals`) |
 | review | `runs-later` | writes, at any depth, to what CI runs with the repository's secrets once a branch is pushed (`.github/workflows/`, `.gitlab-ci.yml`, `.circleci/`, `azure-pipelines.yml`, `Jenkinsfile`, `.buildkite/`) and to what runs on this machine outside any sandbox (`.husky/`, `.pre-commit-config.yaml`, `lefthook.yml`, `.lefthook.yml`, since 0.17.0 package-manager and build configuration that runs code on the next install, script or build (`.npmrc` `node-options` or `script-shell`, `.yarnrc`, `.yarnrc.yml` `yarnPath`, `.cargo/config.toml` and `.cargo/config` `rustc-wrapper` or `runner`, `bunfig.toml` `preload`, in the project or the home), the editors' project configuration (since 0.17.0 all of it; before, only `.vscode/tasks.json`), whose tasks, launch and run configurations, MCP servers and settings that name a program the editor runs (all of `.vscode/` and the folder, `*.code-workspace`, all of `.idea/` and the folder, and JetBrains' shared `*.run.xml`; ADR-060), and the folders a repository's `core.hooksPath` usually names, `.githooks/`, `.git-hooks/`, `githooks/` and `git-hooks/` (`scripts/git-hooks/` included) with the folders themselves; not every folder named `hooks`, which holds React hooks and docs), including Cline's workspace hooks (`.clinerules/hooks/`, `.cline/hooks/`, every file of which Cline runs on each tool call, and the folders `.clinerules`, `.clinerules/hooks`, `.cline`, `.cline/hooks`; rules files in `.clinerules/` stay ordinary writes), including what an agent host starts in its next session (a project's `.claude/hooks/`, `.mcp.json`, `.cursor/mcp.json` and `.codex/config.toml`, and in the home `~/.claude.json`, `~/.claude/plugins/`, `~/.cursor/mcp.json` and `~/.cursor/cli-config.json`), and OpenClaw's plugin directories (`~/.openclaw/extensions/`, a project's `.openclaw/extensions/`), and GitHub Copilot CLI's repository hook files and MCP servers (`.github/hooks/`, `.github/mcp.json`) and, in the home, `~/.copilot/mcp-config.json`, `~/.copilot/installed-plugins/` and `~/.copilot/agents/`, and pi's extensions, MCP server lists and a project's pi settings (`~/.pi/agent/extensions/`, `~/.pi/agent/mcp.json`, a project's `.pi/extensions/`, `.pi/mcp.json` and `.pi/settings.json`), and Gemini CLI's extensions (`~/.gemini/extensions/`), policy files (`.gemini/policies/` at any depth, `~/.gemini/policies/`: they can allow what OpenMoat leaves to Gemini CLI, and a non-interactive run accepts a project's without a question), custom commands (`.gemini/commands/`, whose shell runs when the person types the command, outside any tool hook) and subagents (`.gemini/agents/`), a repository's GitHub Copilot CLI agents (`.github/agents/`, whose frontmatter may carry hooks), and Claude Code's subagents, skills and slash commands (`.claude/agents/`, `.claude/skills/`, `.claude/commands/`, at any depth, the home's included), and the shared Agent Skills folder `.agents/skills/` (at any depth, the home's included, with the folders `.agents` and `.agents/skills`), which Codex, Cursor, GitHub Copilot CLI, pi, Gemini CLI, OpenCode, goose and Antigravity CLI load into later sessions (one fact, `AGENT_SKILLS` in `crates/openmoat-hosts/src/contract/convention.rs`, named by each of those hosts' specs; before, a clean session wrote it freely), and OpenCode's plugins, custom tools and commands (`plugins/`, `plugin/`, `tools/`, `tool/`, `commands/`, `command/` in `~/.config/opencode` and in a project's `.opencode`, and agents, modes and skills (`agents/`, `agent/`, `modes/`, `mode/`, `skills/`, `skill/`) in both, which set their own prompt, model and permissions or load into every later session, with the folders in `~/.config/opencode` that hold them and its commands and tools; plugins and tools load into OpenCode's process, a project's at start with no prompt, and a command's `` !`…` `` shell runs when the person types it), a project's OpenCode configuration (`opencode.json`, `opencode.jsonc`, `.opencode/opencode.json[c]`, which add plugins, MCP servers and permission rules), the package files OpenCode installs plugin code from (`~/.config/opencode/package.json` and `node_modules/`, a project's `.opencode/package.json`, `~/.cache/opencode/node_modules/`) and `opencode plugin` (a `shell` pattern), which adds a plugin to a project's configuration, and the agents' own commands that save an MCP server, turn a defined one on or start a server's OAuth sign-in (`shell` patterns: `claude mcp add`/`add-json`/`login` and `claude plugin install`, `codex mcp add`/`login`, Cursor's `agent mcp enable`/`login`, `openclaw mcp add`/`set`/`configure`/`login`, `copilot mcp add`/`enable`, `pi mcp add`/`login`, `gemini mcp add`/`enable` and `gemini extensions install`/`link`, `opencode mcp add`/`auth`/`debug`, `hermes mcp` alone and `add`/`install`/`picker`/`configure`/`login`/`reauth`; `mcp list` and `mcp get` stay as they were), and the Continue CLI's `~/.continue/config.yaml`, whose MCP servers it starts, and what every Python start runs, the allowed `pytest` included (a `.pth` file in a `site-packages` or `dist-packages` directory, and `sitecustomize.py` and `usercustomize.py` anywhere: Python imports them from any folder on `sys.path`; a project's `.venv` too, which an install writes, so the OS sandboxes leave them writable), and since 0.17.0 a virtual environment's interpreter and scripts (`.venv/bin/` and `venv/bin/` at any depth, with those folders themselves), which the editor's Python extension and test runners start outside any sandbox, and a dev container's configuration (`.devcontainer/` with the folder itself, `.devcontainer.json`), whose `initializeCommand` the editor runs on this machine, not in the container, when the folder is opened, and Hermes Agent's cron jobs and skills (`~/.hermes/cron/`, `~/.hermes/skills/`), another profile's `config.yaml`, `shell-hooks-allowlist.json`, `.env`, plugins, hooks, skills and cron jobs (`~/.hermes/profiles/*/…`), and a project's `.hermes/plugins/` (loaded with `HERMES_ENABLE_PROJECT_PLUGINS`) with the folders above it (`.hermes`, `.hermes/plugins`), and the folders above a repository's Copilot hooks, its pi files and its OpenCode plugins themselves (`.github/hooks`, `.pi`, `.pi/extensions`, `.opencode`, `.opencode/plugins`, `.opencode/plugin`), whose rename (`mv .pi q`) moves those files with them. OpenClaw's state database (`~/.openclaw/state/`, which holds its exec approvals and the `cron` jobs its Gateway runs; an OpenClaw `cron` add or update is decided as a write of it) is `kernel-self`, so writes to it are denied. `project-fs` and `openmoat allow --dir` leave the project ones out, so the write needs review; reading them stays allowed. Hook only: the OS sandboxes list them as writable, since a deny there would make them unreadable or fail installs that write them (`husky`); the exception is `openmoat run`, which keeps its commands from writing a project's agent configuration, the files each host's spec marks as such (`Protect::runs_later`, ADR-091: every project file above that an agent host loads, Cline's and Gemini CLI's included, but not OpenCode's `.opencode/package.json`, which OpenCode writes itself at start, nor the folders above them, which it keeps from being created, renamed or removed instead), a write the person allowed included: Seatbelt wherever they are, on Linux, within ADR-090's limits, the existing ones and missing folders whose holder exists directly in the project ([SANDBOX.md](SANDBOX.md)). The agents' lines of this rule and of `project-fs` are generated from each host's spec (`crates/openmoat-hosts/tests/protect.rs`) |
-| review | `persistence` | writes to `~/Library/LaunchAgents`, `~/.gitconfig`, `~/.config/git`, `~/.config/autostart`, `~/.config/systemd/user`, since 0.17.0 to where every later install fetches packages from (pip's `~/.config/pip/pip.conf`, `~/.pip/pip.conf` and `~/Library/Application Support/pip/pip.conf`, uv's `~/.config/uv/uv.toml`) and to Bun's `~/.bunfig.toml`, and into folders on `PATH` (`~/.local/bin`, `~/bin`, `~/.cargo/bin`, `/usr/local/bin`, `/opt/homebrew/bin`), where a file named after `git`, `ls` or `node` runs in its place later (installers such as `pipx install`, `cargo install`, `brew install` and `npm i -g` are commands, not writes, and keep their verdict; `kernel-self` denies OpenMoat's own names in any `bin`); `crontab`, `at` and `batch` (the job they read is classified too, so a denied command in it stays denied); since ADR-112, writes to the system's schedulers and service managers (`/var/spool/cron`, macOS `/private/var/at/tabs`, `/etc/crontab`, `/etc/anacrontab`, `/etc/cron.*`, `/etc/periodic`, `/etc/systemd/system`, `/etc/systemd/user`, `/lib/systemd/system`, `/usr/lib/systemd/{system,user}`, `/etc/init.d`, `/etc/rc.local`, `/Library/LaunchDaemons`, `/Library/LaunchAgents`), `systemctl` `enable`, `reenable`, `link`, `preset`, `preset-all`, `add-wants`, `add-requires`, `set-default` and `edit` (`status`, `start`, `restart` and `list-*` stay as they were), a `systemd-run --on-*` timer, and `launchctl load`, `bootstrap`, `enable` and `submit` |
+| review | `persistence` | writes to `~/Library/LaunchAgents`, `~/.gitconfig`, `~/.config/git`, `~/.config/autostart`, `~/.config/systemd/user`, since 0.17.0 to where every later install fetches packages from (pip's `~/.config/pip/pip.conf`, `~/.pip/pip.conf` and `~/Library/Application Support/pip/pip.conf`, uv's `~/.config/uv/uv.toml`) and to Bun's `~/.bunfig.toml`, and into folders on `PATH` (`~/.local/bin`, `~/bin`, `~/.cargo/bin`, `/usr/local/bin`, `/opt/homebrew/bin`), where a file named after `git`, `ls` or `node` runs in its place later (installers such as `pipx install`, `cargo install`, `brew install` and `npm i -g` are commands, not writes, and keep their verdict; `kernel-self` denies OpenMoat's own names in any `bin`); `crontab`, `at` and `batch` (the job they read is classified too, so a denied command in it stays denied); since ADR-112, writes to the system's schedulers and service managers (`/var/spool/cron`, macOS `/private/var/at/tabs`, `/etc/crontab`, `/etc/anacrontab`, `/etc/cron.*`, `/etc/periodic`, `/etc/systemd/system`, `/etc/systemd/user`, `/lib/systemd/system`, `/usr/lib/systemd/{system,user}`, `/etc/init.d`, `/etc/rc.local`, `/Library/LaunchDaemons`, `/Library/LaunchAgents`), `systemctl` `enable`, `reenable`, `link`, `preset`, `preset-all`, `add-wants`, `add-requires`, `set-default` and `edit` (`status`, `start`, `restart` and `list-*` stay as they were), a `systemd-run --on-*` timer, and `launchctl load`, `bootstrap`, `enable` and `submit`; PowerShell's `Set-ExecutionPolicy` for the user or the machine (`@execution-policy <policy> <scope>`, ADR-116; `-Scope Process` gives no atom) |
 | review | `system-files` | since ADR-112: writes, deletes, moves, links and permission changes in the operating system's own folders, however the command spells them (`rm`, `cp`/`mv`/`install`/`ln` targets, `tee`, `>` and `>>`, `chmod`, `chown`, `curl -o`, `wget -O`, file tools, and inline code that deletes a file it names, such as `os.remove`, `Path.unlink`, `shutil.rmtree` or `fs.rmSync`): `/etc` (and `/private/etc`), `/usr` except `/usr/local`, `/bin`, `/sbin`, `/lib`, `/lib32`, `/lib64`, `/libx32`, `/boot`, `/System`, and the system parts of `/Library` (`Extensions`, `SystemExtensions`, `StartupItems`, `PrivilegedHelperTools`, `Security`, `Keychains`, `Filesystems`). Reads stay as they were; `/usr/local`, `/opt/homebrew`, `/tmp` and the home are not listed, and a project inside one of these folders (`/usr/src/app` in a container) keeps `project-fs`'s allow, which is tried first |
 | review | `stops-openmoat` | `pkill` or `killall` with a pattern that could match the process name `openmoat` or `moat`, read as the regular expression it is (`shell/kills.rs`, the atom `@kills <name>`): `pkill -f 'openmoat proxy'`, `killall openmoat`, `pkill -f 'open.*'`, `pkill -f .`, `pkill -x openmoat`, `pkill -f /usr/local/bin/openmoat`; a pattern cannot match when one of its literal runs appears in neither name, so `pkill -f latency-compare.py`, `pkill -f my-server.js` and `pkill -f 'node .*vite'` are not matched (with `-f`, a pattern naming only an argument of the process is not seen); and `kill` of the pids a command substitution naming `moat` looks up (`kill -9 $(pgrep openmoat)`, `` kill `pidof moat` ``: the `kill` is also matched with each substitution's text in place of `$(…)`; `pgrep openmoat` alone stays as it was): it may stop the egress proxy service or another running OpenMoat process |
 | review | `stops-system` | since ADR-112: stopping a process the operating system or the login session needs (the atom `@kills-system <what>`, `shell/kills.rs`): a `pkill` or `killall` pattern one of whose alternatives could match `init`, `launchd`, `systemd` (and `systemd-journald`, `-logind`, `-udevd`, `-resolved`), `sshd`, `cron`/`crond`, `syslogd`/`rsyslogd`, `dbus-daemon`, `polkitd`, `auditd`, `kernel_task`, `loginwindow`, `WindowServer`, `securityd`, `opendirectoryd`, `mDNSResponder`, `configd`, `gdm`, `sddm`, `lightdm` or `Xorg` itself, or names it by path (`pkill sshd`, `pkill ssh`, `pkill -f /usr/sbin/sshd`); every process of `root` (`pkill -u root`, `-U 0`, `killall --user root`); `kill 1` and `kill -9 -1` (every process the user may signal); and `kill` of the pids `pgrep` or `pidof` looks up for one of those names (`kill -9 $(pgrep sshd)`). A pattern that only holds a name stays as it was (`pkill -f initdb`, `pkill -f "node server"`, `killall node`), as do `kill <pid>`, `kill %1` and `kill -1 <pid>` (the signal SIGHUP). Pids a script finds at run time (`kill -9 $pid` in a loop over `ps`) are not seen |
 | review | `home-sweep` | reading the home folder or `~/.config` themselves, which is what a recursive read of them reads (`grep -r . ~`, `tar czf h.tgz ~`, `find ~ -name '*.pem'`, `du -sh ~`). `df -h ~` queries the file system holding the path and opens nothing under it, so it is no read (§3.1), and a `~` inside an interpreter's program (`perl -0pi -e 's~a~b~'`) is a delimiter, not the home |
 | review | `secret-names` | a path through a variable whose value is not known (the `@unknown-path` atom, §3.1) whose file name is a key's, a token file's or a `.env` (`cat $X/id_rsa`, `cat "$d"/.env`); other such paths defer |
 | review | `other-home` | any path in another user's home (`~alice/.ssh/id_rsa`, the `@other-home` atom), which OpenMoat cannot place and which may hold that user's secrets |
+| review | `obfuscated` | `@obfuscated <signals>`: a shell or PowerShell line written to hide what it runs, scored on MITRE DET0505's signals (`crates/openmoat-core/src/obfuscation.rs`, ADR-116): escapes of printable letters, quotes splitting a word, backslashes before letters, a command word built by an expansion, `${!x}`, `${x:n:m}` cuts, `IFS` changes, letters joined from variables, decoders, `rev`, rotated `tr` alphabets, base-`#` arithmetic, escape density, length, a high-entropy word; in PowerShell backticks inside words, `[char]` codes, joined string literals, `-join`/`-f` building, reversal, `-bxor`, `FromBase64String`, `-EncodedCommand`, `Invoke-Expression`, alternating case and indexed characters. At a score of 3 or more; no allowed conformance fixture and no MoatBench step reaches it (`tests/obfuscation.rs`). The line is classified as well, so a deny still wins |
 | review | `opaque-code` | `<program> @<argument>` atoms of `awk`, `sed`, `sort`, `uniq`, `cut` (a program or option the classifier cannot prove harmless, §3.1), `printf -v`, setting `CDPATH`, `<shell> @stdin`: text piped into a shell that the command line does not show (`printf '\x63at .env' \| sh`), and `@opaque-code <interpreter>`: inline code that opens files, connects, reads the environment or runs programs with text it builds at run time (§3.1); and `@opaque-code <runner>`: a `cmd`, PowerShell or `wt` line built at run time, whose program cannot be read (`wsl-crossing`, ADR-083) |
 | review | `package-near-miss` | installing a package whose name is not on the bundled list of popular names for its registry but is one typo or a common trick away from one that is (the `@package-near-miss` atom, §3.1): `pip install reqeusts`, `npm i lodahs`, `npm i react_dom`, `pip install python-requests`, `cargo add tokio-rs`. The reason names the popular package. A popular name, or one far from every popular name, is not held for review: unknown packages are normal, so those installs defer like any other |
 | review | `package-run-unknown` | fetching a package and running it at once (`npx`, `bunx`, `pnpx`, `npm exec`/`npm x`, `pnpm dlx`, `yarn dlx`, `bun x`, `uvx`, `uv tool run`, `pipx run`) when its name is on neither the bundled popular list nor the tool list, pinned to a version or not, and the project neither has it in `node_modules/.bin` nor declares it (the `@package-run-unknown` atom, §3.1, ADR-102): `npx create-helper-kit`, `uvx helper-kit-cli@0.3`. A near miss is `package-near-miss`; a listed name defers as its install does; `npx --no-install`, `npm exec --no` and `uvx --offline` fetch nothing, so they name no package |
@@ -2652,3 +2776,42 @@ openmoat policy remove team
 - All three commands must be run from a terminal, refuse while the lock shows drift, and
   are denied to agents by `kernel-self` (`openmoat policy *`). Without `ssh-keygen` they
   refuse with a message saying so; nothing else changes.
+
+## 12. The team's managed layer
+
+`openmoat team join` installs a team's signed bundle as a layer over your policy
+([TEAM.md](TEAM.md), ADR-119). Its rule files have a repository policy's shape (§10)
+without `allow`, signed through one manifest in the namespace `openmoat-team-bundle`.
+Every load of the policy merges the layers in this order:
+
+1. your `policy.yaml`;
+2. your `openmoat allow` rules in force;
+3. installed packs (§11);
+4. the team's layer: its deny rules join yours, its review rules join the list tried
+   before every allow rule (`team:<team>:<file>:<id>`), its `require:` raises the
+   level (§9.2), its `requests:` deny lists join yours (§2.3), and its `settings:`
+   raise yours to the stricter value;
+5. your directory grants, which leave out what any of the above holds for review;
+6. in a project, its repository policy (§10).
+
+So nothing in your own policy widens past the team's layer: a deny is absolute (§4),
+a team review is tried before your allow rules, `openmoat allow` rules and directory
+grants, and each setting is the stricter of yours and the team's:
+
+| `settings:` key | Its only accepted value | In force |
+|---|---|---|
+| `sandbox.strict` | `true` | on |
+| `sandbox.package_min_release_age_days` | 1 or more | the larger of yours and the team's; yours of 0 (off) counts as none |
+| `hooks.foreign` | `hold` | `hold` |
+| `unattended` | `review` | `review` |
+| `mcp.trust_first_sight` | `false` | off |
+| `mcp.allow_sampling` | `false` | off |
+
+The layer cannot allow anything: a rule file with an `allow` list, or a setting given
+its weaker value, does not parse. The manifest, its signature, the team's key, each rule
+file and `~/.moat/team.json` are pinned by the lock; a change after `team join` or
+`team update` is drift and every call is denied (`kernel-integrity`). `openmoat team
+update` refuses a bundle whose `serial` is not above the installed one, and waits for
+your answer when the new bundle widens your policy (§8.3). Team deny rules reach the
+host sandboxes at the next `openmoat sandbox sync`, as a pack's do; review rules are
+hook only.

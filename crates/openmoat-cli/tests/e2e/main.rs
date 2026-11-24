@@ -39,6 +39,7 @@ mod escapes;
 mod export;
 #[cfg(unix)]
 mod fail_safe;
+mod gate;
 mod gemini_cli;
 mod goose;
 mod guard;
@@ -103,6 +104,7 @@ mod sandbox_sync;
 mod secret;
 #[cfg(unix)]
 mod secret_command;
+mod secret_mint;
 mod serve;
 mod session_code;
 #[cfg(unix)]
@@ -111,6 +113,7 @@ mod staging;
 mod taint;
 mod taint_answered;
 mod team;
+mod team_mode;
 mod trifecta;
 mod trust;
 mod uninstall;

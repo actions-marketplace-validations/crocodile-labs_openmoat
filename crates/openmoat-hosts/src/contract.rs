@@ -12,6 +12,7 @@ mod base;
 mod bundle;
 mod consent;
 mod convention;
+mod deadline;
 mod docs;
 mod heartbeat;
 mod hook_failure;
@@ -38,9 +39,10 @@ pub use advisory::{Advisories, Advisory, Platform, Version};
 pub use bundle::Bundle;
 pub use consent::ConsentFile;
 pub use convention::{AGENT_SKILLS, Convention, every_runs_later};
+pub use deadline::{DEADLINE_MARGIN_S, MIN_DEADLINE_S, deadline_for};
 pub use docs::{HostDocs, ToolRow};
 pub use heartbeat::{Activity, HEARTBEAT_FLAG, Heartbeat, Liveness, Sessions, Started};
-pub use hook_failure::{FailureOutcome, HookFailure};
+pub use hook_failure::{FailureOutcome, HookFailure, Unanswered};
 pub use hook_file::HookLayout;
 pub use hook_off::{
     HookOff, Managed, ManagedHooks, ManagedShape, ProjectFile, ProjectOff, SessionOverride,
@@ -61,7 +63,7 @@ pub use protect::{Helper, Paths, ProcessSpec, Protect, RunsLater};
 pub use relaxed::{KeyShape, RelaxedCheck, RelaxedKey};
 pub use reviews::{Reviews, Unseen};
 pub(crate) use reviews::{answer, decided};
-pub use run_facts::{RunFacts, RunWrite};
+pub use run_facts::{RunFacts, RunListen, RunWrite};
 pub(crate) use settings::set;
 pub use settings::{SettingsFile, SettingsReader};
 pub use system_settings::{SystemFile, SystemSettingsSpec};
@@ -231,6 +233,10 @@ pub struct HostSpec {
     /// What `openmoat run` needs to start the host, for a host with no OS
     /// sandbox of its own (ADR-076).
     pub run: RunFacts,
+    /// The one loopback port the host serves under `openmoat run`, for a host
+    /// that listens (OpenClaw's Gateway); `None` for every host that only
+    /// connects out (ADR-108 §7).
+    pub run_listen: Option<RunListen>,
     /// The inherited environment variables the host needs under `openmoat
     /// run`'s allowlist (ADR-077, which names the source of each), beside the
     /// variable that moves its configuration directory. Names the host's own
@@ -530,7 +536,8 @@ impl InstallSpec {
 /// Seconds `moat guard` may take before it denies on its own. A host that times
 /// a hook out treats it as failed, and Claude Code, Codex and the Continue CLI
 /// then run the call; below every hook timeout a spec sets, so the host gets the
-/// deny (the contract test checks every host).
+/// deny (the contract test checks every host). A host with a shorter limit
+/// gets an earlier deadline ([`HostSpec::guard_deadline_s`], ADR-120).
 ///
 /// The watchdog measures wall-clock time, which includes the time the guard
 /// waits to be scheduled. A guard decides in 10–20 ms, but on a machine loaded

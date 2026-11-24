@@ -18,6 +18,7 @@ mod delivery;
 mod disturbance;
 mod environment;
 mod exit;
+mod gate;
 mod guard_relay;
 mod hangs;
 mod heartbeat;
@@ -60,6 +61,7 @@ mod start;
 )]
 mod state_acl;
 mod taint;
+mod team;
 mod terminal;
 mod time;
 mod trust;

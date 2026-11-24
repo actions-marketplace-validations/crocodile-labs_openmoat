@@ -135,6 +135,8 @@ fn default_rules(moved_dirs: Vec<(String, String)>) -> Rules {
         terminals: Vec::new(),
         trust: None,
         tool_shell: None,
+        helpers: None,
+        listen: None,
     };
     let ir = openmoat_core::ir::lower(&policy, &ctx).unwrap();
     landlock::generate(&ir, &grants).unwrap().rules
@@ -190,6 +192,7 @@ fn the_refusal_names_the_root_and_offers_isolate_only_where_it_hides() {
         write: vec![tmp.clone(), project.clone()],
         list: Vec::new(),
         connect_port: None,
+        bind_port: None,
     };
     let in_project = Path::new(&project).join("state");
     let message = refusal(&in_project, &rules, Some(&tmp), false).unwrap();

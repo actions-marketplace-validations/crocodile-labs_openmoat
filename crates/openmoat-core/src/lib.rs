@@ -34,6 +34,7 @@ mod kind;
 pub mod lexer;
 pub mod lint;
 pub mod mcp_flow;
+pub mod obfuscation;
 mod packages;
 mod patch;
 mod paths;
@@ -98,8 +99,15 @@ pub use secret::{
     PathRefusal, Permit, RequestPath, Route as SecretRoute, SECRET_RULE_PREFIX, Secret,
     Source as SecretSource, Tls as SecretTls,
 };
+/// Minted, short-lived secrets and their local helpers (ADR-118).
+pub mod mint {
+    pub use crate::secret::{
+        AWS_CREDENTIALS, AwsSts, GCP_CREDENTIALS, Gcp, GithubApp, Helper, MintSource,
+    };
+}
 pub use shell::cwd::leaves_unknown_directory;
 pub use shell::installs::package_atoms;
+pub use shell::powershell::{POWERSHELL, is_powershell};
 pub use shell::push::Push;
 pub use shell::replaced::replaced_files;
 pub use staging::{DEFAULT_OUTSIDE_FOLDERS, DEFAULT_OUTSIDE_READS, StagingSettings};

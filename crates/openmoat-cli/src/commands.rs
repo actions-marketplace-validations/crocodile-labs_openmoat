@@ -5,12 +5,16 @@ mod allowed;
 mod approvals;
 mod audit;
 pub(crate) mod bench;
+mod confine;
+mod credential;
 mod demo;
 mod doctor;
 mod edit;
+mod gate;
 pub(crate) mod guard;
 mod hooks;
 mod init;
+mod inventory;
 mod mcp;
 mod miswired_hook;
 mod overview;
@@ -29,6 +33,7 @@ mod show;
 mod snapshot;
 mod status;
 mod team;
+mod team_mode;
 mod trust;
 mod uninstall;
 mod watch;
@@ -37,8 +42,9 @@ mod why;
 use anyhow::Result;
 
 use crate::cli::{
-    ApprovalsCommand, AuditCommand, CaCommand, Cli, Command, DeliverCommand, HooksCommand,
-    McpCommand, PolicyCommand, ProxyCommand, SandboxCommand, SecretCommand,
+    ApprovalsCommand, AuditCommand, CaCommand, Cli, Command, DeliverCommand, GateCommand,
+    HooksCommand, McpCommand, PolicyCommand, ProxyCommand, SandboxCommand, SecretCommand,
+    TeamCommand,
 };
 use crate::exit::Code;
 
@@ -55,6 +61,7 @@ pub fn run(cli: Cli) -> Result<Code> {
     match command {
         Command::Init(args) => init::run(&args),
         Command::Uninstall(args) => uninstall::run(&args),
+        Command::Confine(args) => confine::run(&args),
         Command::Guard(args) => Ok(guard::run(&args)),
         Command::Show(args) => show::run(&args),
         Command::Watch(args) => watch::run(&args),
@@ -112,6 +119,7 @@ pub fn run(cli: Cli) -> Result<Code> {
         Command::Snapshot(args) => snapshot::run(&args),
         Command::Restore(args) => restore::run(&args),
         Command::Isolated(args) => run::inside(&args),
+        Command::Credential { command } => credential::run(&command),
         Command::Policy { command } => match command {
             PolicyCommand::Lint(args) => policy::lint(&args),
             PolicyCommand::Check(args) => policy::check(&args),
@@ -140,6 +148,17 @@ pub fn run(cli: Cli) -> Result<Code> {
             HooksCommand::List => hooks::list(),
             HooksCommand::Accept => hooks::accept(),
         },
+        Command::Gate { command } => match command {
+            GateCommand::Setup => gate::setup(),
+            GateCommand::Status => gate::status(),
+            GateCommand::Remove => gate::remove(),
+        },
+        Command::Team { command } => match command {
+            TeamCommand::Join(args) => team_mode::join(&args),
+            TeamCommand::Update(args) => team_mode::update(&args),
+            TeamCommand::Leave => team_mode::leave(),
+        },
+        Command::Inventory(args) => inventory::run(&args),
     }
 }
 
@@ -161,11 +180,22 @@ pub fn run_port_only_network() -> Option<String> {
     run::port_only_network()
 }
 
+/// Why `moat run --listen PORT` is refused on this system, if it is.
+pub fn run_listen_refused_here(port: u16) -> Option<String> {
+    run::listen_refused_here(port)
+}
+
 /// Whether this process runs under a restricted token, as the Windows tier
 /// of `openmoat run` starts the agent and its hooks (ADR-115).
 #[cfg(windows)]
 pub fn run_in_restricted_token() -> bool {
     run::windows::in_restricted_token()
+}
+
+/// The planned protection score of a plain `openmoat run` here (ADR-108 §2);
+/// `None` where it has no sandbox.
+pub fn run_default_score() -> Option<u32> {
+    run::score::default_run()
 }
 
 /// Why `openmoat run` cannot sandbox on this machine; `None` when it can.

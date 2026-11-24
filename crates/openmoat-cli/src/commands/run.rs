@@ -27,12 +27,15 @@ mod boundary;
 #[cfg(any(windows, test))]
 mod command_line;
 mod env;
+mod helpers;
 mod hook_off;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod inherited;
 mod isolation;
 #[cfg(target_os = "linux")]
 mod linux;
+/// `--listen` before anything starts (ADR-108 §7).
+mod listen;
 #[cfg(target_os = "macos")]
 mod macos;
 mod release_age;
@@ -114,6 +117,9 @@ pub fn run(args: &RunArgs) -> Result<Code> {
     let owner = Owner::of(&name.to_string_lossy(), &path_string(&program));
     // Before anything starts: the level the policy requires of this program.
     let strict = required::check(&home, &ctx, owner, &name.to_string_lossy())?;
+    // `--listen` (ADR-108 §7): where nothing in the system holds the network,
+    // nothing can keep a listening socket to loopback either.
+    listen::check(args.listen, owner)?;
     // The tier (ADR-080): on Linux the Isolated one where bubblewrap works.
     let tier = isolation::choose(Asked::of(args), &platform::isolation(), strict.as_deref())?;
     if args.print_boundary {
@@ -152,6 +158,9 @@ pub fn run(args: &RunArgs) -> Result<Code> {
         })
         .transpose()?;
     let ca_notice = terminating.as_ref().and_then(|t| t.notice.clone());
+    // The local helpers of `helper:` secrets (ADR-118): in the run's temp
+    // directory, or bound in where that starts empty (`--isolate`).
+    let helpers = helpers::Helpers::for_run(&policy, run_temp.as_ref().map(RunTemp::path), &git)?;
     // Tool commands do not receive the relay token (ADR-075): what commands
     // may write must not hold the wrapper that keeps it from them.
     let write_roots: Vec<String> = ctx
@@ -174,6 +183,8 @@ pub fn run(args: &RunArgs) -> Result<Code> {
         terminals: platform::terminals(),
         trust: trust.as_ref().map(|t| path_string(t.dir())),
         tool_shell: tool_shell.as_ref().map(tool_shell::ToolShell::grant),
+        helpers: helpers.dir(),
+        listen: args.listen,
     };
     let state = home.root();
     // The agent runs inside the sandbox and must read its own login there; every
@@ -288,6 +299,7 @@ pub fn run(args: &RunArgs) -> Result<Code> {
         .env_remove("NO_PROXY")
         .env_remove("no_proxy");
     agent.command().envs(git);
+    helpers.apply(agent.command());
     if let Some(temp) = &run_temp {
         agent.command().env(temp::TMPDIR, temp.path());
     }
@@ -478,6 +490,12 @@ pub fn mcp_sandbox_off() -> Option<String> {
 /// would (Linux without a usable bubblewrap), for `moat doctor`.
 pub fn port_only_network() -> Option<String> {
     platform::port_only_network()
+}
+
+/// Why `moat run --listen PORT` is refused on this system whatever the tier,
+/// if it is (macOS, Windows; ADR-108 §7), for `status`'s run command.
+pub fn listen_refused_here(port: u16) -> Option<String> {
+    platform::listen_refused_here(port)
 }
 
 /// The kernel's Landlock ABI on Linux, for `doctor` and `sandbox show`
