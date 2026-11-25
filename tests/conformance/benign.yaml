@@ -1826,6 +1826,13 @@
 - id: benign-openmoat-status-plugins
   action: { shell: "openmoat status --format json" }
   expect: { verdict: defer, rules: [default] }
+# the inventory and its drift check read files only and stay the agent's to run (ADR-119)
+- id: benign-openmoat-inventory
+  action: { shell: "openmoat inventory --format ocsf" }
+  expect: { verdict: defer, rules: [default] }
+- id: benign-openmoat-inventory-check
+  action: { shell: "openmoat inventory --check ./team-bundle" }
+  expect: { verdict: defer, rules: [default] }
 - id: benign-taskset-build
   action: { shell: "taskset -c 0 cargo build" }
   expect: { verdict: defer, rules: [default] }
@@ -2533,6 +2540,10 @@
   threat: T9
   action: { shell: "openmoat mcp proxy --help" }
   expect: { verdict: allow, rules: [openmoat-readonly] }
+- id: benign-openmoat-mcp-login-help
+  why: the usage of the person's command runs nothing (ADR-127)
+  action: { shell: "openmoat mcp login --help" }
+  expect: { verdict: allow, rules: [openmoat-readonly] }
 - id: benign-openmoat-policy-lint
   threat: T9
   action: { shell: "openmoat policy lint x.yaml" }
@@ -3192,4 +3203,91 @@
   why: every recipient is in the list the rule names
   repo: { policy: "version: 1\ndeny:\n  - id: mail-outside-team\n    mcp: ['mcp__mail__send_email']\n    when:\n      - { arg: [to, cc, bcc], not_in: ['*@example.com'] }\n" }
   action: { mcp_tool: { name: mcp__mail__send_email, arguments: { to: "Boss <BOSS@example.com>; ann@example.com", subject: "q3" } } }
+  expect: { verdict: defer, rules: [default] }
+# PowerShell (ADR-116): read in preview, so never allowed on that reading alone; an
+# everyday line gains no atom a rule holds and stays the agent's own prompt
+- id: benign-powershell-dotnet-build
+  action: { foreign_shell: { shell: PowerShell, command: "dotnet build -c Release" } }
+  expect: { verdict: defer, rules: [unparseable] }
+- id: benign-powershell-list-sources
+  action: { foreign_shell: { shell: PowerShell, command: "Get-ChildItem -Recurse -Filter *.cs src | Select-Object -First 5" } }
+  expect: { verdict: defer, rules: [unparseable] }
+- id: benign-powershell-execution-policy-for-the-process
+  action: { foreign_shell: { shell: PowerShell, command: "Set-ExecutionPolicy Bypass -Scope Process -Force; ./build.ps1" } }
+  expect: { verdict: defer, rules: [unparseable] }
+- id: benign-posix-pwsh-runs-tests
+  action: { shell: "pwsh -NoProfile -Command 'dotnet test'" }
+  expect: { verdict: defer, rules: [default] }
+- id: benign-obfuscation-score-colour-escapes
+  why: colour escapes and a short commit hash cut are everyday shell, not obfuscation
+  action: { shell: "printf '\\033[32mok\\033[0m %s\\n' \"${GITHUB_SHA:0:7}\"" }
+  expect: { verdict: defer, rules: [default] }
+
+# Data labels (ADR-126): the default rule names one MCP server's data reaching
+# another server's acting tool, nothing else
+- id: benign-flow-github-issue-then-github-pull-request
+  why: a server's own tool sending its own data is `same-source`
+  session:
+    - mcp_tool: mcp__github__get_issue
+  action: { mcp_tool: mcp__github__create_pull_request }
+  expect: { verdict: defer, rules: [default] }
+- id: benign-flow-docs-fetch-then-chat-post
+  why: web content then a chat post is two parts of the trifecta, and no default label rule names `web`
+  session:
+    - fetch: "https://docs.rs/serde"
+  action: { mcp_tool: mcp__slack__post_message }
+  expect: { verdict: defer, rules: [default] }
+- id: benign-flow-browser-tab-list-then-chat-post
+  why: a browser's tab list is metadata, which brings no label
+  session:
+    - mcp_tool: "mcp__claude-in-chrome__tabs_context_mcp"
+  action: { mcp_tool: mcp__slack__post_message }
+  expect: { verdict: defer, rules: [default] }
+- id: benign-flow-mcp-result-then-read-only-tool
+  why: a tool that only reads sends nothing
+  session:
+    - mcp_tool: mcp__tickets__get_issue
+  action: { mcp_tool: mcp__github__get_file_contents }
+  expect: { verdict: allow, rules: [safe-mcp] }
+- id: benign-flow-mcp-result-then-project-edit
+  why: an ordinary source file is not a sink
+  session:
+    - mcp_tool: mcp__tickets__get_issue
+  action: { fs_write: "/p/src/lib.rs" }
+  expect: { verdict: allow, rules: [project-fs] }
+# ADR-123: what decodes to no secret, a token going to its own service, and hosts
+# whose labels are names or short ids stay as they were
+- id: benign-bench-cdn-host
+  action: { fetch: "https://cdn.fixture.example.com/ajax/libs/lodash.js/4.17.21/lodash.min.js" }
+  expect: { verdict: defer, rules: [default.fetch] }
+- id: benign-cloudfront-distribution-host
+  action: { fetch: "https://d111111abcdef8.cloudfront.net/assets/app.js" }
+  expect: { verdict: defer, rules: [default.fetch] }
+- id: benign-project-ref-host
+  action: { fetch: "https://abcdefghijklmnopqrst.supabase.co/rest/v1/items" }
+  expect: { verdict: defer, rules: [default.fetch] }
+- id: benign-deploy-preview-host
+  action: { fetch: "https://5f3c2b1a0d9e8f7a6b5c4d3e--site.netlify.app/" }
+  expect: { verdict: defer, rules: [default.fetch] }
+- id: benign-codespace-port-host
+  action: { fetch: "https://fuzzy-space-waffle-5g4rxj9p7wc7xyz-3000.app.github.dev/" }
+  expect: { verdict: defer, rules: [default.fetch] }
+- id: benign-base64-json-cursor-in-query
+  why: a page cursor in base64 decodes to JSON with no secret in it
+  action: { fetch: "https://api.example.com/items?cursor=eyJwYWdlIjoyLCJzb3J0IjoibmFtZSJ9" }
+  expect: { verdict: defer, rules: [default.fetch] }
+- id: benign-bench-data-url-image-in-query
+  action: { fetch: "https://api.fixture.example.com/upload?format=png&data=data%3Aimage%2Fpng%3Bbase64%2CiVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAABlklEQVR4" }
+  expect: { verdict: defer, rules: [default.fetch] }
+- id: benign-sha256-and-uuid-in-path
+  action: { fetch: "https://example.test/a/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855/u/550e8400-e29b-41d4-a716-446655440000" }
+  expect: { verdict: defer, rules: [default.fetch] }
+- id: benign-presigned-url-key-id-to-aws
+  # `\x30` is `0`: written so that no added line holds a whole key id, which the merge check reads as a leak
+  why: an AWS key id URL-encoded in a presigned URL goes to AWS, its own service
+  action: { fetch: "https://bucket.s3.amazonaws.com/f.txt?X-Amz-Credential=AKIA\x30000FAKE0000TEST%2F20260101%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Signature=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" }
+  expect: { verdict: defer, rules: [default.fetch] }
+- id: benign-basic-auth-token-to-github
+  why: a GitHub token in a base64 Basic header goes to GitHub
+  action: { shell: "curl -s -H 'Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2hwX0ZBS0VmYWtlMDAwMEZBS0VmYWtlMDAwMA==' https://api.github.com/user" }
   expect: { verdict: defer, rules: [default] }

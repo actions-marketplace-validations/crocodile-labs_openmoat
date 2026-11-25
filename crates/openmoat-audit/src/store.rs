@@ -563,18 +563,6 @@ impl Store {
             .map_err(Into::into)
     }
 
-    /// Most recent events, newest first.
-    pub fn recent(&self, limit: usize) -> Result<Vec<Event>, StoreError> {
-        let mut stmt = self
-            .conn
-            .prepare(&format!("{} ORDER BY id DESC LIMIT ?1", self.select()))?;
-        let rows = stmt.query_map(
-            params![i64::try_from(limit).unwrap_or(i64::MAX)],
-            row_to_event,
-        )?;
-        rows.collect::<Result<_, _>>().map_err(Into::into)
-    }
-
     /// All events of one session, oldest first. `session_id` is matched as
     /// [`Store::record`] stored it, redacted.
     pub fn session(&self, session_id: &str) -> Result<Vec<Event>, StoreError> {

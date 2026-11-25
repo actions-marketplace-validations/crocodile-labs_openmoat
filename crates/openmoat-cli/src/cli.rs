@@ -7,11 +7,13 @@ use openmoat_hosts::Host;
 
 mod approvals;
 mod audit;
+mod credential;
 mod mcp;
 mod policy;
 mod provenance;
 mod serve;
 mod snapshot;
+mod team;
 
 mod timeline;
 
@@ -22,7 +24,11 @@ pub use audit::{
     AnchorArgs, AuditCommand, CheckpointArgs, DeliverCommand, DeliverFlushArgs, DeliverStatusArgs,
     DeliverTestArgs, EvidenceArgs, ExportArgs, StatsArgs, TeamReportArgs, VerifyArgs,
 };
-pub use mcp::{McpAcceptArgs, McpCommand, McpProxyArgs, McpUnwrapArgs, McpWrapArgs};
+pub use credential::CredentialCommand;
+pub use mcp::{
+    McpAcceptArgs, McpCommand, McpLoginArgs, McpProxyArgs, McpRemoteArgs, McpUnwrapArgs,
+    McpWrapArgs,
+};
 pub use policy::{
     ActionKind, CheckArgs, CheckDiffArgs, CompileArgs, DiffArgs, DiffFormat, InstallArgs, LintArgs,
     MigrateArgs, PolicyCommand, RemoveArgs, TrustKeyArgs, UpgradeArgs,
@@ -30,6 +36,7 @@ pub use policy::{
 pub use provenance::{DiffProvenanceArgs, ProvenanceArgs, ProvenanceLevel};
 pub use serve::ServeArgs;
 pub use snapshot::{RestoreArgs, SnapshotArgs};
+pub use team::{InventoryArgs, InventoryFormat, TeamCommand, TeamJoinArgs, TeamUpdateArgs};
 
 pub use timeline::{Only, WatchArgs, WhyArgs};
 
@@ -43,7 +50,8 @@ pub use timeline::{Only, WatchArgs, WhyArgs};
                   The hook decides each call; the operating system also bounds commands inside the\n\
                   agents' sandboxes `openmoat init` configures and under `openmoat run`. Outside them an\n\
                   allowed command runs with your permissions (`openmoat status` shows each agent's level).\n\
-                  Exit codes: 0 allow/ok, 1 the agent `run` started failed, 2 deny, 3 review (unresolved),\n\
+                  Exit codes: 0 allow/ok, 1 the agent `run` started failed (or `inventory --check` found\n\
+                  drift), 2 deny, 3 review (unresolved),\n\
                   64 usage or configuration error\n\
                   (`guard` exits 2 instead, so a broken hook blocks rather than fails open).\n\n\
                   Run `openmoat` alone to see what is protected and answer anything that needs you:\n\
@@ -63,6 +71,18 @@ pub enum Command {
     /// Remove OpenMoat's hooks and sandbox settings from the agents, restoring the
     /// backups `openmoat init` took. Refused unless run from an interactive terminal.
     Uninstall(UninstallArgs),
+    /// Make typing a hook-only agent's name start it in `openmoat run`'s sandbox, or
+    /// with `--off` start it as before (ADR-108). Refused unless run by a person at a
+    /// terminal.
+    #[command(after_help = "\
+Examples:
+  openmoat confine <agent-id>          typing the agent's name now starts it under `openmoat run`
+  openmoat confine --all               every hook-only agent `openmoat run` can start here
+  openmoat confine --off <agent-id>    start it as before again
+Agent ids are the ones `openmoat init --hosts` takes; `openmoat status` lists them.
+`openmoat status` shows each agent's protection score. An agent `openmoat run` cannot
+start on this machine is named with why. Guide: docs/USAGE.md, \"How each agent is protected\".")]
+    Confine(ConfineArgs),
     /// Decide one hook request from stdin (invoked by host hooks, not by people).
     Guard(GuardArgs),
     /// Show one audit event, a session, or the most recent events.
@@ -143,6 +163,13 @@ pub enum Command {
     /// What `openmoat run` starts inside bubblewrap on Linux (not for people).
     #[command(hide = true)]
     Isolated(IsolatedArgs),
+    /// The local credential helper `openmoat run` sets up for git and the AWS tools
+    /// (ADR-118): asks the run's proxy for a minted secret (not for people).
+    #[command(hide = true)]
+    Credential {
+        #[command(subcommand)]
+        command: CredentialCommand,
+    },
     /// Inspect and test policy files.
     Policy {
         #[command(subcommand)]
@@ -172,6 +199,50 @@ pub enum Command {
         #[command(subcommand)]
         command: HooksCommand,
     },
+    /// A team's signed policy bundle as a managed layer over your policy (ADR-119):
+    /// join it, update it, leave it. Nothing is sent anywhere.
+    Team {
+        #[command(subcommand)]
+        command: TeamCommand,
+    },
+    /// This machine's state for a team: agents and versions, hooks and whether they
+    /// run, protection levels, MCP servers and their pins, policy and lock, latest
+    /// checkpoint. Redacted; reads files only, sends nothing unless `--deliver`.
+    #[command(after_help = "\
+Examples:
+  openmoat inventory                          JSON (openmoat-inventory-v1)
+  openmoat inventory --format ocsf            OCSF 1.3.0 events, for a SIEM
+  openmoat inventory --check ~/src/acme-openmoat; echo $?
+                                              0: this machine has what the team's bundle requires; 1: it differs
+Guide: docs/TEAM.md")]
+    Inventory(InventoryArgs),
+    /// A second factor on every command that loosens the protection (ADR-117): once
+    /// set up, `allow`, `trust`, `edit`, `doctor --accept` and the other commands that
+    /// widen or re-pin ask for a code from your authenticator app as well.
+    #[command(after_help = "\
+Try it, with any authenticator app on your phone:
+  openmoat gate setup                       scan the link or type the key, then type the app's code
+  openmoat allow --site example.com         now asks for a code first
+  openmoat show --session policy-changes    every change, with whether a code was given
+  openmoat gate remove                      asks for a code, then turns it off
+Guide: docs/USAGE.md, \"Ask for a code before anything is loosened\".")]
+    Gate {
+        #[command(subcommand)]
+        command: GateCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GateCommand {
+    /// Make a new secret, show it once for your authenticator app, and turn the gate on
+    /// once you type a code the app gives. Refused unless run by a person at an
+    /// interactive terminal.
+    Setup,
+    /// Whether the gate is on, and how many wrong codes count against its limit now.
+    Status,
+    /// Turn the gate off: asks for a code first. Refused unless run by a person at an
+    /// interactive terminal.
+    Remove,
 }
 
 #[derive(Debug, Subcommand)]
@@ -300,6 +371,19 @@ impl InitMcpArgs {
     pub fn sandbox(&self) -> Option<bool> {
         self.mcp_no_sandbox.then_some(false)
     }
+}
+
+#[derive(Debug, Args)]
+pub struct ConfineArgs {
+    /// The agents, by id (`gemini-cli`, `openclaw`, …).
+    #[arg(value_parser = parse_host(), required_unless_present = "all", conflicts_with = "all")]
+    pub agents: Vec<Host>,
+    /// Every agent set up here that `openmoat run` can start.
+    #[arg(long)]
+    pub all: bool,
+    /// Remove the agents' shims instead, so typing their names starts them as before.
+    #[arg(long)]
+    pub off: bool,
 }
 
 #[derive(Debug, Args)]
@@ -548,6 +632,15 @@ pub struct RunArgs {
     #[arg(long = "write", value_name = "PATH")]
     pub writes: Vec<PathBuf>,
 
+    /// The one TCP port the agent may listen on, on loopback only: a local
+    /// service the agent serves, such as OpenClaw's Gateway. It may bind no other
+    /// port and no other address. On Linux the port is forwarded from this
+    /// machine's loopback into the sandbox's network; refused where the sandbox
+    /// has no network of its own (bubblewrap), on macOS (its sandbox would let a
+    /// bind to every address through) and on Windows.
+    #[arg(long, value_name = "PORT", value_parser = clap::value_parser!(u16).range(1024..))]
+    pub listen: Option<u16>,
+
     /// Print every place the sandbox is stricter or wider than the policy.
     #[arg(long)]
     pub verbose: bool,
@@ -617,6 +710,13 @@ pub struct TierArgs {
     /// nothing on macOS, which has no Isolated tier yet.
     #[arg(long, conflicts_with = "isolate")]
     pub no_isolate: bool,
+
+    /// The microVM tier (design, ADR-128): the agent on a kernel of its own in a
+    /// lightweight VM, seeing only the project, with network only through OpenMoat's
+    /// proxy. Not built yet: refused on every system with what this one would use, for
+    /// example `openmoat run --vm -- claude`. Docs: docs/SANDBOX.md "The microVM tier".
+    #[arg(long, conflicts_with_all = ["isolate", "no_isolate", "listen"])]
+    pub vm: bool,
 }
 
 /// `--env`: the one form the policy's `sandbox.env_allow` takes too.

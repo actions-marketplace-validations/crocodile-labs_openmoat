@@ -12,7 +12,7 @@ protect) are on [openmoat.dev/docs](https://openmoat.dev/docs/).
 |---|---|
 | [README](../README.md) | What OpenMoat is, the quick start, supported agents and the main limits |
 | [FEATURES.md](FEATURES.md) | Every feature, what it does, which agents and operating systems it works with, how to turn it on and its page; per agent: own sandbox, `openmoat run`, reviews, MCP servers, managed hooks, plugin packages, what happens when the hook fails (agent tables generated) |
-| [INSTALL.md](INSTALL.md) | Install and [upgrade](INSTALL.md#upgrading) on macOS, Linux and Windows, and [what 0.26.0 changes](INSTALL.md#from-0250-to-0260); `openmoat init`; what each agent's hook covers (Cursor's `beforeTabFileRead`, the Cline CLI's `PostToolUse` file); other config directories |
+| [INSTALL.md](INSTALL.md) | Install and [upgrade](INSTALL.md#upgrading) on macOS, Linux and Windows, and [what 0.27.0 changes](INSTALL.md#from-0260-to-0270); `openmoat init`; what each agent's hook covers (Cursor's `beforeTabFileRead`, the Cline CLI's `PostToolUse` file); other config directories |
 | [IDE.md](IDE.md) | Claude Code in VS Code and JetBrains, and Cursor's editor and Tab: what the hook covers there (`getDiagnostics`, `executeCode`, the editors' project files), the setup and checks, what is not covered (a repository's git configuration, the editor selection) |
 | [DEMO.md](DEMO.md) | The launch demo, run in a throwaway home |
 
@@ -36,7 +36,7 @@ protect) are on [openmoat.dev/docs](https://openmoat.dev/docs/).
 | Document | What it covers |
 |---|---|
 | [PROTECTION.md](PROTECTION.md) | What protects each agent on Linux, macOS and Windows (hook, what happens when it fails, its own sandbox, the `openmoat run` tier, MCP servers, what a command can read in a run) and the tests behind each claim (generated; do not edit) |
-| [LIMITS.md](LIMITS.md) | What OpenMoat does not stop: approvals and prompts, sandboxes and allowed code (`openmoat run` on Windows holds no reads or network), what the hook does not see (remote MCP servers have no gateway), agents that skip or change the check, the limits of single checks |
+| [LIMITS.md](LIMITS.md) | What OpenMoat does not stop: approvals and prompts, sandboxes and allowed code (`openmoat run` on Windows holds no reads or network), what the hook does not see (remote MCP servers have a gateway only once a person names them), agents that skip or change the check, the limits of single checks |
 | [THREAT_MODEL.md](THREAT_MODEL.md) | What is defended, how the hook and the OS layers answer each threat class, and the known limits |
 | [EVIDENCE.md](EVIDENCE.md) | What the OS layer stops in an allowed project script, per OS (generated; do not edit) |
 | [COVERAGE.md](COVERAGE.md) | The conformance fixtures per threat class (generated; do not edit) |

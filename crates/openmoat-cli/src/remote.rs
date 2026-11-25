@@ -16,7 +16,8 @@ pub mod channel;
 pub mod channels;
 mod connect;
 mod gate;
-mod https;
+/// Also the transport of minted secrets (ADR-118, `secrets/mint.rs`).
+pub(crate) mod https;
 pub mod listen;
 pub mod live;
 mod prompt;
@@ -75,6 +76,7 @@ pub fn gated(
         until: std::time::Instant::now()
             + wait::room(
                 &request.host.spec().hook_failure,
+                request.host.spec().guard_deadline_s(),
                 started.elapsed(),
                 relayed,
             ),

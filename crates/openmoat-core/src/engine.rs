@@ -22,6 +22,7 @@ mod contents;
 mod context;
 mod egress;
 mod injection;
+mod labels;
 mod packages;
 mod sections;
 mod staging;
@@ -29,6 +30,7 @@ mod taint;
 mod trifecta;
 
 use atoms::{checked_atoms, value_read_atoms};
+pub use labels::{DATA_FLOW_ATOM, Label};
 pub(crate) use sections::Section;
 pub use staging::{STAGING_ATOM, Staging};
 pub use taint::{Secret, Taint, UntrustedKind};
@@ -346,9 +348,20 @@ impl CompiledPolicy<'_> {
         let (mut atoms, unparsed) = checked_atoms(action, &self.ctx, self.opens_as(), paths);
         let egress = egress::atoms(action, &atoms, &self.policy.secrets)
             .into_iter()
-            .filter(|atom| !egress::counts_where_named(atom) || self.matched_rules(atom).is_some());
+            .filter(|atom| !egress::counts_where_named(atom) || self.matched_rules(atom).is_some())
+            // data in a host name counts only on its way to a host no rule allows (ADR-123)
+            .filter(|atom| egress::host_data(atom).is_none_or(|host| !self.allows_host(host)));
         atoms.extend(egress);
         (atoms, unparsed)
+    }
+
+    /// Whether an allow rule of the policy lists `host` for a connection.
+    fn allows_host(&self, host: &str) -> bool {
+        let net = AtomicAction::Net {
+            host: host.to_owned(),
+        };
+        self.matched_rules(&net)
+            .is_some_and(|d| d.verdict == Verdict::Allow)
     }
 
     /// How a read-only page open is decided under this policy (ADR-047).

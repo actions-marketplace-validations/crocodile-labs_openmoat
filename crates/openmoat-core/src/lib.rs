@@ -34,6 +34,7 @@ mod kind;
 pub mod lexer;
 pub mod lint;
 pub mod mcp_flow;
+pub mod obfuscation;
 mod packages;
 mod patch;
 mod paths;
@@ -53,6 +54,7 @@ mod staging;
 mod taint;
 pub mod token;
 mod verdict;
+pub mod vm;
 pub mod widen;
 pub mod yaml;
 
@@ -64,8 +66,8 @@ pub use arguments::{
 // The taint `Secret` (material a session read) is exported as `TaintSecret`, apart
 // from the policy's brokered `Secret`.
 pub use engine::{
-    CompiledPolicy, EvalContext, STAGING_ATOM, Secret as TaintSecret, Staging, Taint,
-    UntrustedKind, evaluate,
+    CompiledPolicy, DATA_FLOW_ATOM, EvalContext, Label as TaintLabel, STAGING_ATOM,
+    Secret as TaintSecret, Staging, Taint, UntrustedKind, evaluate,
 };
 pub use host::{
     MAX_DNS_LABEL_LEN, MAX_DNS_NAME_LEN, file_url_path, malformed_port_pattern, port_pattern,
@@ -98,8 +100,15 @@ pub use secret::{
     PathRefusal, Permit, RequestPath, Route as SecretRoute, SECRET_RULE_PREFIX, Secret,
     Source as SecretSource, Tls as SecretTls,
 };
+/// Minted, short-lived secrets and their local helpers (ADR-118).
+pub mod mint {
+    pub use crate::secret::{
+        AWS_CREDENTIALS, AwsSts, GCP_CREDENTIALS, Gcp, GithubApp, Helper, MintSource,
+    };
+}
 pub use shell::cwd::leaves_unknown_directory;
 pub use shell::installs::package_atoms;
+pub use shell::powershell::{POWERSHELL, is_powershell};
 pub use shell::push::Push;
 pub use shell::replaced::replaced_files;
 pub use staging::{DEFAULT_OUTSIDE_FOLDERS, DEFAULT_OUTSIDE_READS, StagingSettings};

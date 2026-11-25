@@ -145,6 +145,16 @@ pub struct Grants {
     pub trust: Option<String>,
     /// The tool-shell wrapper of this run (ADR-075), read-only for commands.
     pub tool_shell: Option<ToolShellGrant>,
+    /// The directory of the run's credential helper files (ADR-118),
+    /// resolved. Like [`Grants::trust`], bound in read-only under `--isolate`.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(dead_code, reason = "only the Linux `--isolate` tier binds it in")
+    )]
+    pub helpers: Option<String>,
+    /// `moat run --listen`: the one TCP port commands may bind and accept
+    /// connections on, on loopback only (ADR-108 §7).
+    pub listen: Option<u16>,
 }
 
 /// The paths the tool-shell wrapper needs (`commands/run/tool_shell.rs`).

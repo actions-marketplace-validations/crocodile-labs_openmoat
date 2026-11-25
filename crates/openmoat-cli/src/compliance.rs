@@ -192,17 +192,22 @@ pub const GROUPS: &[Group] = &[
         does: "deny a known token or a brokered secret sent to a host that is not its own, \
                a payment card number sent off the machine, a push that publishes a \
                secret, and hold for review what a session that read secret material sends out, \
-               a send after it read private data and untrusted content, and a send of what it \
-               packed or copied out of private files",
+               a send after it read private data and untrusted content, a send of what it \
+               packed or copied out of private files, one MCP server's data sent through \
+               another server's acting tool, a token hidden by an encoding, and encoded \
+               data in the name of a host no rule allows",
         covers: Covers::Rules(&[
             "token-egress",
             "placeholder-egress",
             "encoded-egress",
             "card-egress",
             "credential-egress",
+            "encoded-secret-egress",
+            "hostname-data",
             SESSION_TAINT,
             LETHAL_TRIFECTA,
             STAGING_EGRESS,
+            "data-flow",
             PUSH_SECRET,
             PROXY_SECRET,
             PROXY_SECRET_ROUTE,
@@ -232,11 +237,12 @@ pub const GROUPS: &[Group] = &[
         title: "Running code the agent did not show",
         does: "deny piping downloaded or decoded content into a shell and a program that \
                resolves to another path than its pin, and work handed to WSL from Windows; hold \
-               for review running opaque code, a file the session wrote or a container handed \
-               the host",
+               for review running opaque code, a command line written to hide what it runs, a \
+               file the session wrote or a container handed the host",
         covers: Covers::Rules(&[
             "pipe-to-shell",
             "opaque-code",
+            "obfuscated",
             SESSION_WRITTEN_CODE,
             EXECUTABLES,
             "container-host",

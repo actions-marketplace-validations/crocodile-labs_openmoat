@@ -39,6 +39,7 @@ mod escapes;
 mod export;
 #[cfg(unix)]
 mod fail_safe;
+mod gate;
 mod gemini_cli;
 mod goose;
 mod guard;
@@ -64,6 +65,7 @@ mod lock_settings;
 mod mcp;
 mod mcp_gateway;
 mod mcp_init_wrap;
+mod mcp_remote;
 mod mcp_startup;
 mod mcp_status;
 mod moatbench;
@@ -96,6 +98,7 @@ mod required_level;
 mod run;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod run_guard;
+mod run_vm;
 mod sandbox;
 #[cfg(unix)]
 mod sandbox_exec;
@@ -103,6 +106,7 @@ mod sandbox_sync;
 mod secret;
 #[cfg(unix)]
 mod secret_command;
+mod secret_mint;
 mod serve;
 mod session_code;
 #[cfg(unix)]
@@ -111,6 +115,7 @@ mod staging;
 mod taint;
 mod taint_answered;
 mod team;
+mod team_mode;
 mod trifecta;
 mod trust;
 mod uninstall;

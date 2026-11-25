@@ -29,7 +29,8 @@ pub fn run(args: &UpgradeArgs) -> Result<Code> {
     let home = Home::locate()?;
     if !home.policy_path().is_file() {
         bail!(
-            "no policy at {}; run `openmoat init`",
+            "no policy at {}; run `openmoat init`, then `openmoat policy upgrade --dry-run` \
+             (docs/USAGE.md#after-upgrading-openmoat)",
             home.policy_path().display()
         );
     }
@@ -85,14 +86,35 @@ pub fn run(args: &UpgradeArgs) -> Result<Code> {
         out.finish()?;
         return Ok(Code::Ok);
     }
+    // A widening upgrade, accepted, asks the gate too (ADR-117); `--yes` never
+    // skips it.
+    let pass = match &widened {
+        Some(report) if widening::needs_acceptance(report) => Some((
+            crate::gate::pass(&home, "openmoat policy upgrade --accept-widening")?,
+            crate::widen::ledger_lines(report),
+        )),
+        _ => None,
+    };
     // The re-pin after the writes covers every pinned file: one changed while
     // the question waited would be accepted unseen.
     checkpoint.verify(&home, &[])?;
     apply(&home, &plan, grants.as_ref(), &mut out)?;
+    if let Some((pass, details)) = pass {
+        pass.record(
+            &home,
+            &format!("policy upgraded to the {VERSION} default, widening it"),
+            &details,
+        );
+    }
     if hook_upgrade {
         trust_steps(&home, &binary, &mut out)?;
     }
     sync(&home, &mut out)?;
+    writeln!(
+        out,
+        "Next: `openmoat status` shows the protection in place; \
+         `openmoat policy upgrade --undo` puts the previous policy back"
+    )?;
     out.finish()?;
     Ok(Code::Ok)
 }
@@ -393,8 +415,11 @@ fn undo(home: &Home, yes: bool) -> Result<Code> {
         out.finish()?;
         return Ok(Code::Ok);
     }
+    // An upgrade most often narrows, so going back is taken as a widening.
+    let pass = crate::gate::pass(home, "openmoat policy upgrade --undo")?;
     checkpoint.verify(home, &[])?;
     write_private(&home.policy_path(), previous.as_bytes())?;
+    pass.record(home, "policy restored to before the upgrade", &[]);
     copy_or_remove(&base_backup, &home.policy_base_path())?;
     fs::remove_file(&policy_backup)
         .with_context(|| format!("removing {}", policy_backup.display()))?;

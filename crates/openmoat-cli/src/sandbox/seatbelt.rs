@@ -231,6 +231,7 @@ pub fn generate(ir: &Enforcement, grants: &Grants) -> Generated {
     p.profile.push_str(KEYCHAIN);
     p.profile.push_str(TERMINAL_INPUT);
     network(&mut p, &ir.egress.net, grants.proxy_port);
+    listen(&mut p, grants.listen);
     p
 }
 
@@ -394,6 +395,36 @@ fn network(p: &mut Generated, net: &Access, port: Option<u16>) {
     }
     p.report.proxy_only(net);
 }
+
+/// `openmoat run --listen`: bind and accept on the one port (ADR-108 §7).
+/// Not reached today: `openmoat run` refuses `--listen` on macOS, because a
+/// bind to every address (`0.0.0.0`) on the port goes through this filter too
+/// (the end-to-end test on macOS 15). Connecting to the port is not allowed:
+/// only the proxy is reachable.
+fn listen(p: &mut Generated, port: Option<u16>) {
+    let Some(port) = port else {
+        return;
+    };
+    let _ = writeln!(
+        p.profile,
+        "; seatbelt.listen: `openmoat run --listen {port}`, on loopback only\n\
+         (allow network-bind (local ip \"localhost:{port}\"))\n\
+         (allow network-inbound (local ip \"localhost:{port}\"))"
+    );
+    let message = format!(
+        "`openmoat run --listen {port}`: commands may listen on loopback port {port} alone and \
+         accept connections from this machine on it"
+    );
+    p.report.allowance(
+        Kind::Net,
+        LISTEN_ALLOWANCE,
+        vec![format!("localhost:{port}")],
+        &message,
+    );
+}
+
+/// The allowance listed for `openmoat run --listen`.
+pub const LISTEN_ALLOWANCE: &str = "seatbelt.listen";
 
 /// `pattern` with its literal directory prefix written as the filesystem
 /// resolves it, when that differs ([`super::links::real_spelling`]).

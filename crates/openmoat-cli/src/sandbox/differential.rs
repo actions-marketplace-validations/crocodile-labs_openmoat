@@ -73,6 +73,8 @@ fn grants() -> Grants {
         terminals: vec!["/dev/pts/3".into()],
         trust: None,
         tool_shell: None,
+        helpers: None,
+        listen: None,
     }
 }
 

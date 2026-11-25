@@ -58,6 +58,11 @@ pub const LETHAL_TRIFECTA: &str = "lethal-trifecta";
 pub const KERNEL_INTEGRITY: &str = "kernel-integrity";
 /// A call `openmoat guard` could not check or record: a deny (invariant 4).
 pub const KERNEL_ERROR: &str = "kernel-error";
+/// A call `openmoat guard` denied on its own because no decision came before
+/// its deadline for the host, which lies below the agent's hook time limit
+/// (ADR-120): beside `kernel-error` in the answer, alone in the audit row the
+/// guard leaves when the log can still be written.
+pub const HOOK_DEADLINE: &str = "hook-deadline";
 /// A tool OpenMoat does not check.
 pub const UNGOVERNED: &str = "ungoverned";
 /// A call a person approved for the session with `openmoat allow`.
@@ -172,6 +177,9 @@ pub const PROXY_SECRET: &str = "proxy-secret";
 /// A proxy request that would get a secret whose value has expired and was
 /// not renewed (ADR-087): it is not sent.
 pub const PROXY_SECRET_EXPIRED: &str = "proxy-secret-expired";
+/// A local helper's ask for a secret (ADR-118): handed out to the secret's
+/// own host and tool, or refused.
+pub const PROXY_HELPER: &str = "proxy-helper";
 /// A request to a secret's host that the secret's `allow` rules do not name.
 pub const PROXY_SECRET_ROUTE: &str = "proxy-secret-route";
 /// A destination the proxy refuses whatever the policy says.
@@ -203,6 +211,14 @@ pub const AUDIT_DELIVERY_TOO_LARGE: &str = "audit-delivery-too-large";
 pub const AUDIT_DELIVERY_PARTIAL: &str = "audit-delivery-partial";
 /// The record `openmoat audit deliver test` sends.
 pub const AUDIT_DELIVERY_TEST: &str = "audit-delivery-test";
+
+/// The policy-change ledger's row (ADR-117): a person's command widened or
+/// re-pinned the protection, with who ran it and whether the possession
+/// factor was asked.
+pub const POLICY_CHANGE: &str = "policy-change";
+/// A loosening command refused at the possession gate (ADR-117): no code, a
+/// wrong or replayed one, or too many wrong codes.
+pub const GATE_REFUSED: &str = "gate-refused";
 
 /// `policy check-diff`: a path that leaves the repository or is not a file
 /// name git checks out.
@@ -307,6 +323,7 @@ pub const BUILTIN_RULES: &[BuiltinRule] = &[
     worded(LETHAL_TRIFECTA, &words::LETHAL_TRIFECTA),
     worded(KERNEL_INTEGRITY, &words::KERNEL_INTEGRITY),
     worded(KERNEL_ERROR, &words::KERNEL_ERROR),
+    quiet(HOOK_DEADLINE),
     worded(UNGOVERNED, &words::UNGOVERNED),
     quiet(APPROVED_SESSION),
     worded(PROTECTION_REQUIRED, &words::PROTECTION_REQUIRED),
@@ -351,6 +368,7 @@ pub const BUILTIN_RULES: &[BuiltinRule] = &[
     quiet(PROXY_SESSION),
     quiet(PROXY_SECRET),
     quiet(PROXY_SECRET_EXPIRED),
+    quiet(PROXY_HELPER),
     quiet(PROXY_SECRET_ROUTE),
     quiet(PROXY_ADDRESS),
     quiet(PROXY_SNI),
@@ -364,6 +382,8 @@ pub const BUILTIN_RULES: &[BuiltinRule] = &[
     quiet(AUDIT_DELIVERY_TOO_LARGE),
     quiet(AUDIT_DELIVERY_PARTIAL),
     quiet(AUDIT_DELIVERY_TEST),
+    quiet(POLICY_CHANGE),
+    quiet(GATE_REFUSED),
     quiet(DIFF_PATH),
     quiet(DIFF_SECRET),
     quiet(DIFF_POLICY),
