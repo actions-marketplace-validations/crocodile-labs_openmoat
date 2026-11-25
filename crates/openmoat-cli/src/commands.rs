@@ -115,6 +115,8 @@ pub fn run(cli: Cli) -> Result<Code> {
                 DeliverCommand::Flush(args) => audit::deliver::flush(&args),
             },
         },
+        // The microVM tier (ADR-128) is a design: refused before anything starts.
+        Command::Run(args) if args.tier.vm => Ok(run::vm::refuse()),
         Command::Run(args) => run::run(&args),
         Command::Snapshot(args) => snapshot::run(&args),
         Command::Restore(args) => restore::run(&args),
@@ -141,6 +143,8 @@ pub fn run(cli: Cli) -> Result<Code> {
         Command::Mcp { command } => match command {
             McpCommand::Accept(args) => mcp::accept(&args),
             McpCommand::Proxy(args) => mcp::proxy(&args),
+            McpCommand::Remote(args) => mcp::remote(&args),
+            McpCommand::Login(args) => mcp::login(&args),
             McpCommand::Wrap(args) => mcp::wrap(&args),
             McpCommand::Unwrap(args) => mcp::unwrap(&args),
         },

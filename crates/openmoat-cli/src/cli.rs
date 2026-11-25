@@ -25,7 +25,10 @@ pub use audit::{
     DeliverTestArgs, EvidenceArgs, ExportArgs, StatsArgs, TeamReportArgs, VerifyArgs,
 };
 pub use credential::CredentialCommand;
-pub use mcp::{McpAcceptArgs, McpCommand, McpProxyArgs, McpUnwrapArgs, McpWrapArgs};
+pub use mcp::{
+    McpAcceptArgs, McpCommand, McpLoginArgs, McpProxyArgs, McpRemoteArgs, McpUnwrapArgs,
+    McpWrapArgs,
+};
 pub use policy::{
     ActionKind, CheckArgs, CheckDiffArgs, CompileArgs, DiffArgs, DiffFormat, InstallArgs, LintArgs,
     MigrateArgs, PolicyCommand, RemoveArgs, TrustKeyArgs, UpgradeArgs,
@@ -707,6 +710,13 @@ pub struct TierArgs {
     /// nothing on macOS, which has no Isolated tier yet.
     #[arg(long, conflicts_with = "isolate")]
     pub no_isolate: bool,
+
+    /// The microVM tier (design, ADR-128): the agent on a kernel of its own in a
+    /// lightweight VM, seeing only the project, with network only through OpenMoat's
+    /// proxy. Not built yet: refused on every system with what this one would use, for
+    /// example `openmoat run --vm -- claude`. Docs: docs/SANDBOX.md "The microVM tier".
+    #[arg(long, conflicts_with_all = ["isolate", "no_isolate", "listen"])]
+    pub vm: bool,
 }
 
 /// `--env`: the one form the policy's `sandbox.env_allow` takes too.
