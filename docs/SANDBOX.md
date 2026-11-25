@@ -952,6 +952,14 @@ setting cannot make a token restricted.
 `openmoat mcp wrap` does not put MCP servers under this tier by default (most start
 through `npx`, a batch file); `openmoat mcp wrap --sandbox` asks for it.
 
+**Why the network and reads are not held yet** ([ADR-124](adr/ADR-124-windows-network-and-reads-not-yet.md)).
+Adding a Windows Filtering Platform filter needs administrator rights, which `openmoat
+run` does not have, and no documented filter condition picks out one run's processes
+under a write-restricted token. That token is checked on writes only, so it cannot deny
+a read without denying the person too. Both wait for an opt-in setup, done once by an
+administrator, that starts the agent as a dedicated local account. Until then the score
+stays at most 55, and `sandbox.strict: true` refuses a Windows run.
+
 ## `openmoat run --isolate` (Isolated tier, Linux)
 
 On Linux the Isolated tier runs the agent in its own view of the machine, built with
@@ -1077,7 +1085,7 @@ processes bind and accept on that one port, on loopback only (ADR-108 §7):
 
 | Where | How the port is held |
 |---|---|
-| macOS | refused: Seatbelt's `localhost:PORT` filter lets a bind to every address (`0.0.0.0`) on the port through too, so the port could be reachable from the network |
+| macOS | refused: Seatbelt's `localhost:PORT` filter lets a bind to every address (`0.0.0.0`) on the port through too, so the port could be reachable from the network; no other filter form excludes that address, and sockets `openmoat run` could hold on it would end with the run while a process the agent left behind keeps its sandbox ([ADR-122](adr/ADR-122-macos-listen-stays-refused.md)); the way forward is the macOS Isolated tier (ADR-023) |
 | Linux, Isolated tier or Lightweight with bubblewrap | Landlock grants a bind to that port alone, inside the agent's own network namespace whose only interface is loopback; `openmoat run` listens on this machine's `127.0.0.1:PORT` and forwards each connection in through a Unix socket only `moat isolated` can use |
 | Linux without a network namespace | refused: Landlock restricts a bind by port only, on every address, so the port would be open to the network |
 | Windows | refused: the tier holds the network by the proxy variables alone |

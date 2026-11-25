@@ -165,7 +165,7 @@ Which agents and operating systems each feature works with: [docs/FEATURES.md](d
 | **Secret broker** | The agent holds a placeholder; the proxy adds your real token for one host only. Under `openmoat run` it can mint short-lived credentials instead, limited to what you list: GitHub App tokens for chosen repositories, AWS credentials with a session policy, Google Cloud access tokens, handed to git and the AWS tools through their own credential helpers ([docs/POLICY.md](docs/POLICY.md#221-minted-narrowed-credentials-source-mint-helper-preview)). | `openmoat secret add gh` |
 | **MCP gateway** | Starts only the MCP servers you accepted, pins each tool's description and the package release the server runs, and holds data one server returned that is sent into another's writing tool. Speaks MCP 2025 and 2026-07-28; refuses a server's sampling requests unless the policy allows them, and links it asks you to open that are not `https` or go to a host the policy does not allow ([docs/USAGE.md](docs/USAGE.md#mcp-servers-through-the-gateway)). Remote (Streamable HTTP) servers too, in preview: you pin the URL and token once, the agent never holds the token, and no request reaches a local, private or metadata address the policy does not name ([docs/USAGE.md](docs/USAGE.md#remote-mcp-servers)). | `openmoat mcp wrap <server>` · `openmoat mcp login <server> --url <url>` (preview) |
 | **Audit trail** | Records every decision in a local, keyed, hash-chained log with secrets redacted; follows calls live and explains any block. Signed checkpoints let anyone with the public key check the log on another machine ([docs/USAGE.md](docs/USAGE.md#check-that-the-audit-log-was-not-changed)). | `openmoat watch` · `openmoat audit checkpoint` |
-| **Merge check** | Flags what a pull request's changes do: CI and hook edits, agent settings, look-alike packages, new hosts, a policy change that lets more through. | `openmoat policy check-diff` |
+| **Merge check** | Flags what a pull request's changes do: CI and hook edits, agent settings, look-alike packages (in lockfiles too, where a dependency pulls them in), install scripts a lockfile records, a lockfile hash swapped for the same version, new hosts, a policy change that lets more through ([docs/MERGE_CHECK.md](docs/MERGE_CHECK.md#supply-chain)). | `openmoat policy check-diff` |
 | **Policy lock** | Pins the policy and hook files: an agent's call that changes the rules, approves its own block or switches OpenMoat off is denied. It also records the other hooks, plugin hooks and git programs the agents run, and names a new or changed one until you accept it ([docs/USAGE.md](docs/USAGE.md#other-hooks-the-agents-run)). With `openmoat gate setup`, every command that loosens the protection also asks for a code from your authenticator app, and every policy change is recorded in the audit log. | `openmoat doctor` · `openmoat gate setup` |
 
 **New in 0.27.0, and how to start each:**
@@ -179,7 +179,9 @@ Which agents and operating systems each feature works with: [docs/FEATURES.md](d
 | Hidden or obfuscated commands, and PowerShell, are read | nothing to run: on by default after `openmoat policy upgrade` | [See it decide](#see-it-decide) |
 | A slow check is denied, never run unchecked | nothing to run: on by default | [docs/LIMITS.md](docs/LIMITS.md) |
 
-By risk: secrets read or sent, data sent to unlisted hosts, instructions planted in what
+By risk: secrets read or sent (also hidden by base64, hex or URL encoding, held for review:
+`openmoat policy check --kind fetch '<url>'` shows it), data sent to unlisted hosts or
+in a host name's labels, instructions planted in what
 the agent reads, a send after the same session read both private data and content someone
 else wrote (`lethal-trifecta`, held for review even to an allowed host), data packed or
 copied before it is sent (`staging-egress`), one MCP server's data sent through another
@@ -194,7 +196,10 @@ call's arguments, such as an MCP mail tool's recipients
 applies (`openmoat policy upgrade`, `openmoat trust`, `openmoat policy install`), OpenMoat
 lists the calls it finds the change would decide less strictly, and an upgrade that has any
 needs `--accept-widening`; `openmoat policy diff OLD NEW --widen` checks any two policies
-([docs/POLICY.md §8.3](docs/POLICY.md#83-does-a-change-widen-openmoat-policy-diff---widen-adr-111)). No AI model decides,
+([docs/POLICY.md §8.3](docs/POLICY.md#83-does-a-change-widen-openmoat-policy-diff---widen-adr-111)).
+After you update OpenMoat, `openmoat policy upgrade --dry-run` shows what the new default
+adds to your policy, grouped as new protections and fewer interruptions, keeping your own
+edits ([docs/USAGE.md](docs/USAGE.md#after-upgrading-openmoat)). No AI model decides,
 and OpenMoat sends nothing off your machine unless you set up
 [remote approvals](docs/APPROVALS.md) or [live audit delivery](docs/DELIVERY.md).
 
@@ -278,12 +283,13 @@ re-run, last published OpenMoat 0.19.0
 ([results](https://github.com/crocodile-labs/moatbench/tree/main/runs/2026-11-09-openmoat-0.19.0)).
 
 **Attack sets written by others (decision engine, default policy).** 0.25.0 → 0.26.0
-(the rules this measurement led to, ADR-112) → 0.27.0:
+(the rules this measurement led to, ADR-112) → 0.27.0 → the next release (ADR-123:
+secrets hidden by an encoding and data in host names, held for review):
 
 | Benchmark | Cases | Denied | Denied or held | Allowed | False positives |
 |---|--:|--:|--:|--:|--:|
-| RedCode-Exec (inline code that acts on the machine) | 900 | 19.8% → 22.1% → 22.1% | 50.0% → 68.9% → 69.1% | 0 | – |
-| agent-egress-bench | 122 of 192 | 47.5% → 50.0% → 50.0% | 47.5% → 54.1% → 54.9% | 1 | 12 of 37 in each |
+| RedCode-Exec (inline code that acts on the machine) | 900 | 19.8% → 22.1% → 22.1% → 22.1% | 50.0% → 68.9% → 69.1% → 69.1% | 0 | – |
+| agent-egress-bench | 122 of 192 | 47.5% → 50.0% → 50.0% → 50.0% | 47.5% → 54.1% → 54.9% → 68.9% | 1 | 12 of 37 in each |
 
 The same RedCode-Exec code written to a file and then run is left to the OS sandbox; the
 denied false positives are all hosts the policy does not list. Every case not stopped is
