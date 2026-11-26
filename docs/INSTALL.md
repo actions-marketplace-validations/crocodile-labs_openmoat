@@ -39,8 +39,8 @@ Then run `openmoat init` ([below](#set-up-with-openmoat-init)).
 > **Windows.** On Windows, OpenMoat applies the policy through the agents' hooks. It
 > sets up no OS sandbox for Claude Code or Cursor (Codex's own sandbox settings are
 > written as on other systems), `openmoat run` starts a preview tier that refuses writes
-> outside the project and ends the agent's processes but holds neither reads nor the
-> network ([SANDBOX.md](SANDBOX.md#openmoat-run-on-windows-preview-writes-only)), and `openmoat proxy` cannot
+> outside the project and ends the agent's processes, and holds reads and the network too
+> once `openmoat agent-account setup` has run (a preview; [SANDBOX.md](SANDBOX.md#openmoat-run-on-windows-preview)), and `openmoat proxy` cannot
 > be installed as a service. `openmoat init` gives the state directory an access list of
 > your account and `SYSTEM` only (on an NTFS drive; it refuses a folder another account
 > owns), which keeps other accounts out but not the agent, which runs as you: the hook's
@@ -178,7 +178,7 @@ never ask and change nothing here (ADR-106).
 
 - **Decoy keys.** Fake keys at names no program loads, beside the files a key hunter
   looks for: `~/.aws/credentials.bak` (only when `~/.aws` exists), `~/.git-credentials.bak`
-  and `~/.npmrc.bak`. Each is created only where nothing is at that name, owner-only; no
+  and `~/.npmrc.bak`. Each is created only where nothing is at that name, readable by your account alone; no
   real file is read, changed or replaced. The keys look like real ones to a scanner and
   carry `OpenMoatDecoy`, so you can tell them apart. No real work touches them: a call
   that reads or changes one, or carries one of their values in a command, a URL, a file it
@@ -493,6 +493,31 @@ Then, in a terminal of your own:
    sandboxes as `openmoat sandbox sync` does. `openmoat` alone offers the same at a
    terminal.
 
+### From 0.27.0 to 0.28.0
+
+What you will see, and what to run:
+
+- **`openmoat policy upgrade` offers the new default rules**: `encoded-secret-egress`
+  holds a token or credential sent hidden by an encoding (URL encoding, base64, hex,
+  zero-width characters), `hostname-data` holds encoded bytes in the labels of a host no
+  allow rule lists (ADR-123), the `data-flow` review holds an MCP tool that acts after
+  another MCP server's result (ADR-126, preview), and `kernel-self` also keeps agents away
+  from `openmoat mcp login` and its token folder. The upgrade from the 0.27.0 default only
+  narrows. To see what a URL gets:
+  `openmoat policy check --kind fetch '<url>'`.
+- **On Windows, `openmoat run` can hold reads and the network too** (ADR-129, preview):
+  run `openmoat agent-account setup` once from an administrator terminal, and later runs
+  start the agent as its own local account; Windows then refuses the reads your policy
+  denies and every connection but the one to the run's proxy. Without it, Windows runs are as in
+  0.27.0. How to try it:
+  [USAGE.md](USAGE.md#run-the-agent-as-its-own-windows-account).
+- **`openmoat policy check-diff` reads lockfiles** (ADR-125): a look-alike name, an
+  install script the lockfile records or a `go.sum` hash changed for the same version is
+  flagged in a pull request even when a dependency pulls it in.
+- **New, all optional**: remote (Streamable HTTP) MCP servers through the gateway with
+  `openmoat mcp login <server> --url <url>` (ADR-127, preview), the agent never holding
+  the token.
+
 ### From 0.26.0 to 0.27.0
 
 What you will see, and what to run:
@@ -568,7 +593,7 @@ What you will see, and what to run:
   `require.run: full-boundary` still refuse there. Start the agent's `.exe`, not an npm
   `.cmd` shim, which is refused. The first run in a folder adds one access-list entry for
   a SID no account has (`icacls <folder>` lists it) and keeps it, so later runs change
-  nothing ([SANDBOX.md](SANDBOX.md#openmoat-run-on-windows-preview-writes-only)).
+  nothing ([SANDBOX.md](SANDBOX.md#openmoat-run-on-windows-preview)).
 - **Wrapped MCP servers' sampling requests are refused** unless the policy sets
   `mcp: { allow_sampling: true }`, and a link a server asks you to open must be `https`
   to a host the policy allows (`openmoat allow --site <host>` for a server's own sign-in
@@ -643,7 +668,7 @@ Windows has no user service yet (#272): `openmoat proxy install` and `openmoat p
 status` refuse with exit 64 and say to run `openmoat proxy` in a terminal.
 
 The plist/unit holds only `MOAT_HOME` (a path, never a secret) and the
-pinned `openmoat` binary. On Linux the file is written owner-only (`0o600`);
+pinned `openmoat` binary. On Linux the file is written readable by your account alone (`0o600`);
 on macOS the `LaunchAgents` directory already restricts access to the
 user. Token values the policy brokers are read from the user's
 environment at run time by the proxy itself; they never touch the service
@@ -658,7 +683,7 @@ writes for the current binary and state directory. Each difference is a problem,
   `LD_PRELOAD`, `HTTPS_PROXY`), or a systemd `EnvironmentFile=` or `PassEnvironment=`;
 - any other change (another binary, an `ExecStartPre=`, extra arguments), or a file in
   a form it cannot read (a binary plist);
-- a mode that lets others read or write it (anything but owner-only).
+- a mode that lets others read or write it (anything but readable and writable by your account alone).
 
 ```bash
 openmoat doctor   # ✗ service file     ~/.config/systemd/user/moat-proxy.service sets environment the proxy is started with beyond `MOAT_HOME`: LD_PRELOAD; `openmoat proxy install` writes it again

@@ -50,13 +50,14 @@ Each agent's gaps and the reasons are in
   stops. The end follows the machine's clock: moving the clock forward ends a rule early,
   moving it back makes it last longer by as much, and moving it back to before the rule
   was given ends it.
-- **The gate's code proves a phone, not a person, and only where its secret stays
-  hidden.** With `openmoat gate setup`, a command that loosens the policy also asks for
+- **The gate's code proves that whoever types it holds your authenticator app, not who
+  they are, and only where its secret stays hidden.** With `openmoat gate setup`, a command that loosens the policy also asks for
   a code from your authenticator app (ADR-117). The secret is a file in `~/.moat`,
-  owner-only and denied to agents' own calls; a program running as you outside every
-  hook and sandbox can read it, or delete it and turn the gate off. Lose the phone and
-  you remove the file yourself (`~/.moat/audit.key.gate` and `~/.moat/gate.json`) and
-  set it up again. Approving one held call is not a policy change and asks no code.
+  readable by your account alone and denied to agents' own calls; a program running as
+  you outside every hook and sandbox can read it, or delete it and turn the gate off. If
+  your app no longer has the OpenMoat entry, you delete the two files yourself
+  (`~/.moat/audit.key.gate` and `~/.moat/gate.json`), which turns the gate off, and set it
+  up again ([USAGE.md](USAGE.md#if-you-can-no-longer-get-a-code)). Approving one held call is not a policy change and asks no code.
 
 ## Sandboxes and allowed code
 
@@ -93,21 +94,26 @@ Each agent's gaps and the reasons are in
   tool-shell wrapper (tool commands keep the relay token); batch files (`.cmd`/`.bat`,
   such as npm shims) are not started. The first run in a folder leaves an inherited
   access-list entry on it for a SID no account has, and keeps it; adding it to a large
-  tree takes a while once. A Windows run scores at most 55/100, so
+  tree takes a while once. A run under the token scores at most 55/100, so
   `require.run: full-boundary` and `sandbox.strict: true` refuse there. No real agent has
   been run under it yet: the tests start `cmd.exe`
-  ([SANDBOX.md](SANDBOX.md#openmoat-run-on-windows-preview-writes-only)).
-- **The Windows agent account holds reads in your profile only (preview, ADR-129).** After
-  `openmoat agent-account setup` the agent runs as an account of its own: Windows refuses
-  its reads of the literal places the policy denies in your profile and the write roots
-  that exist when the run starts. Not covered: globs, places made later, places outside
-  your profile (readable to any account through the system's own lists), the network
-  (still the proxy variables only, until the Windows Filtering Platform filters of the
-  next step), and secrets in Windows Credential Manager, which are not the account's (an
-  agent that keeps its login there signs in again). A command line longer than 1024
-  characters is refused. Setup changes the machine (an account, two HKLM values, an
-  inherited read entry on your profile); `openmoat agent-account remove` undoes it. Such a
-  run scores at most 70/100.
+  ([SANDBOX.md](SANDBOX.md#openmoat-run-on-windows-preview)).
+- **The Windows agent account holds reads in your profile only, and the network but name
+  lookups (preview, ADR-129).** After `openmoat agent-account setup` the agent runs as an
+  account of its own: Windows refuses its reads of the literal places the policy denies in
+  your profile and the write roots that exist when the run starts, and its Windows
+  Filtering Platform filters refuse every connection and listen but one to the run's proxy
+  on loopback. Not covered: globs, places made later, places outside your profile
+  (readable to any account through the system's own lists); name lookups, which go
+  through Windows' DNS Client service under its own account and so leave the machine (the
+  record's `dns` downgrade); programs of another local user listening on the eight proxy
+  ports the filters permit; and secrets in Windows Credential Manager, which are not the
+  account's (an agent that keeps its login there signs in again). A command line longer
+  than 1024 characters is refused. Setup changes the machine (an account, two HKLM values,
+  a persistent filtering provider, sublayer and eight filters, an inherited read entry on
+  your profile); `openmoat agent-account remove` undoes it. Such a run scores 100/100 with
+  its `dns` downgrade named, and 70/100 after a setup that has no filters yet (`openmoat
+  agent-account setup` again adds them) or from a terminal that cannot read them back.
 - **`require.run: full-boundary` is about `openmoat run`.** It refuses a run without an OS
   sandbox or, on Linux, without the Isolated tier (ADR-080). An agent started without
   `openmoat run` is not refused
@@ -634,11 +640,12 @@ call.
   `~/.ssh` is not yours. What the container is given of this machine (`--privileged`,
   `-v /:/host`, the Docker socket) is checked by `container-host`; a folder mounted
   some other way is not.
-- **The MCP flow check sees wrapped servers and exact text only.** Results of a server
-  not run through `openmoat mcp wrap` (remote HTTP, plugin or managed servers) are not
-  recorded, and text the agent rewrites, encodes, splits or shortens below eight words
+- **The MCP flow check sees servers that go through the gateway, and exact text only.**
+  Results of a server that runs neither through `openmoat mcp wrap` nor, for a remote
+  HTTP server, through `openmoat mcp login` (plugin or managed servers, or a remote server
+  the agent reaches directly) are not recorded, and text the agent rewrites, encodes, splits or shortens below eight words
   is not found; a tool's own annotations or its name decide whether it writes or sends
-  ([ADR-058](adr/ADR-058-mcp-cross-server-flow.md)).
+  ([ADR-058](adr/ADR-058-mcp-cross-server-flow.md), [ADR-127](adr/ADR-127-remote-mcp-gateway.md)).
 - **The card check is narrow and can misfire.** `card-egress` reads only the text a call
   shows: a number in a file (`curl -d @cards.csv`), encoded or split is not seen. A
   contiguous number counts only in a card's context (a card field's value, or beside a

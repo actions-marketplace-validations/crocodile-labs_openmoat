@@ -260,36 +260,46 @@ whole score ([SANDBOX.md](SANDBOX.md#the-protection-score-and-strict-mode),
 
 ### Run the agent as its own Windows account
 
-On Windows `openmoat run` holds writes only: the agent runs as you, so Windows lets it
+Without this setup, `openmoat run` on Windows holds writes only: the agent runs as you, so Windows lets it
 read everything you can. `openmoat agent-account setup` makes a local account for agents
 once; from then on `openmoat run` starts the agent as that account, and Windows itself
 refuses its reads of `~/.ssh`, other agents' logins and the other places your policy
-denies, as well as its writes outside the project (ADR-129, a preview). The network is
-still held by the proxy variables only; the network filters are the next step.
+denies, as well as its writes outside the project (ADR-129, a preview). Setup also
+installs Windows Filtering Platform filters for the account, so Windows refuses every
+connection and listen it makes but one to the run's proxy, whether or not a program
+honours `HTTP_PROXY`. Name lookups still leave through Windows' DNS Client service; the
+run's record names that as a `dns` downgrade.
 
 #### Try it
 
 From an administrator terminal (Terminal or PowerShell, "Run as administrator"), once:
 
 ```powershell
-openmoat agent-account setup       # creates openmoat-<you>; granting it read on your profile takes a while
+openmoat agent-account setup       # creates openmoat-<you> and its network filters; granting it read on your profile takes a while
 ```
 
 Then from any terminal, as before:
 
 ```powershell
-openmoat run --print-boundary -- claude   # restrictions: agent_account, job_object, wfp_network, windows_read_deny; 70/100
+openmoat run --print-boundary -- claude   # agent_account, job_object, wfp_network, windows_read_deny; 100/100, network wfp_account, downgrade dns
 openmoat run -- claude                    # "Windows preview tier, as the agent account (ADR-129)"
 openmoat run -- cmd /c type $HOME\.ssh\id_ed25519   # refused by Windows: Access is denied
-openmoat agent-account status             # ✔ matches its record; exit 1 when the system differs
+openmoat run -- curl.exe --noproxy * https://example.com   # refused by Windows: only the proxy is reachable
+openmoat run -- curl.exe https://example.com              # through the proxy, which decides it by your policy
+openmoat agent-account status             # ✔ matches its record, 8 filters; exit 1 when the system differs
 ```
 
-Undo, from an administrator terminal: `openmoat agent-account remove` takes out every
-access-list entry it and the runs added, the account and its profile. Without an
+An account set up before the filters existed keeps working at 70/100: `openmoat
+agent-account status` says it has no filters, and `openmoat agent-account setup` again,
+from an administrator terminal, adds them.
+
+Undo, from an administrator terminal: `openmoat agent-account remove` deletes the network
+filters and takes out every access-list entry it and the runs added, the account and its
+profile. Without an
 administrator terminal setup refuses and says to use one; on macOS and Linux it exits 64,
 since `openmoat run` there needs no account. What the account may and may not do, and
 what stays the hook's, is in
-[SANDBOX.md](SANDBOX.md#as-the-agent-account-reads-held-too-preview-adr-129).
+[SANDBOX.md](SANDBOX.md#as-the-agent-account-reads-and-the-network-held-too-preview-adr-129).
 
 ### Can the agent's own sandbox start commands here? (Linux)
 
@@ -375,7 +385,7 @@ nothing that was there before. `openmoat doctor --accept` asks about them too.
 OpenClaw, pi and OpenCode run OpenMoat through a plugin they load, and each starts
 without a plugin it cannot load, running every call unchecked. So the plugin runs
 `openmoat guard --heartbeat --host <id>` as it loads, which records the time in
-`loaded/<id>.json` in the state directory (owner-only; the agent, the time and the
+`loaded/<id>.json` in the state directory (readable by your account alone; the agent, the time and the
 OpenMoat release, nothing else). Under the agent's hook line, `openmoat status` and
 `openmoat doctor` then print one of:
 
@@ -1095,8 +1105,8 @@ Under the summary, the upgrade says whether it moves any call toward allow, chec
 bundled calls, cases from both policies' rules and a search over every path, host and name
 (docs/POLICY.md §8.3). An upgrade that widens is listed case by case and applied only with
 `--accept-widening`; without it nothing changes and the command exits 3. What else
-0.27.0 changes for you (the confine question in `openmoat init`, the new reviews):
-[INSTALL.md](INSTALL.md#from-0260-to-0270).
+0.28.0 changes for you (the new reviews, the Windows agent account):
+[INSTALL.md](INSTALL.md#from-0270-to-0280).
 
 The changes are grouped by what they do, read from the policy before and after:
 
@@ -1166,8 +1176,10 @@ the upgrade.
 
 The commands that loosen your protection run only for a person at a terminal, with no
 agent among the programs that started them. A program that gets a line typed into your
-terminal passes that check. Turn on the gate and each of them also asks for a code from
-the authenticator app on your phone (any app that takes TOTP codes):
+terminal passes that check. Turn on the gate and each of them also asks for a six-digit
+code from an authenticator app: any app that shows time-based (TOTP) codes, such as Google
+Authenticator, Microsoft Authenticator, 1Password or Bitwarden, on your phone or on another
+device:
 
 ```bash
 openmoat gate setup    # shows a link and a key once; type the code your app then shows
@@ -1199,8 +1211,8 @@ case it moves toward allow), the account and whether a code was given; refusals 
 openmoat show --session policy-changes
 ```
 
-Try it, in your own terminal (agents are denied these commands), with any authenticator
-app on your phone:
+Try it, in your own terminal (agents are denied these commands), with an authenticator
+app at hand:
 
 ```bash
 openmoat gate setup                         # scan the link or type the key into the app, then type its code
@@ -1210,11 +1222,28 @@ openmoat allow --remove approved-1          # the undo line `allow` printed; tig
 openmoat gate remove                        # asks for a code once more; the gate is off
 ```
 
-The secret is kept in `~/.moat/audit.key.gate`, owner-only and denied to agents like the
-audit key. A program running as you outside every hook and sandbox can still read it
-([LIMITS.md](LIMITS.md#approvals-and-prompts)). If you lose your phone, remove
-`~/.moat/audit.key.gate` and `~/.moat/gate.json` in your own terminal and run
-`openmoat gate setup` again.
+The secret the codes are made from is kept in `~/.moat/audit.key.gate`, readable by your
+account alone and denied to agents like the audit key. A program running as you outside
+every hook and sandbox can still read it ([LIMITS.md](LIMITS.md#approvals-and-prompts)).
+
+#### If you can no longer get a code
+
+The codes come from the OpenMoat entry `openmoat gate setup` added to your authenticator
+app. If that entry is gone (you lost or reset the device the app was on, or deleted the
+entry), no command that asks for a code can run, `openmoat gate remove` included, since it
+asks for one too. Delete the gate's two files yourself, in your own terminal:
+
+```bash
+rm ~/.moat/audit.key.gate ~/.moat/gate.json   # the secret the codes are made from, and the gate's state
+openmoat gate status                          # the gate is off
+openmoat gate setup                           # optional: a new secret, added to your app as a new entry
+```
+
+On Windows the files are in `%USERPROFILE%\.moat\`. Agents cannot do this for you:
+`kernel-self` denies their calls on both files. Until you set the gate up again, loosening
+commands ask for no code, as before the gate, and are still recorded. If an old device
+still shows an OpenMoat entry, remove it from the app: its codes no longer work.
+
 [ADR-117](adr/ADR-117-loosening-possession-gate.md) has the design.
 
 ## Share rules with your team
@@ -1679,7 +1708,7 @@ reads `~`. The file must not exist yet, and an agent cannot run it.
 | `openmoat audit report <file>…` | one report over verified exports from several machines |
 | `openmoat audit deliver status` · `test [--sink <id>]` · `flush` (each `[--format json]`) | live delivery to the sinks in `~/.moat/delivery.yaml`: each sink's progress and last failure · one test record to each sink · deliver now, resuming a paused sink; exit 64 when the file is not honoured, a test is not accepted or a flush stopped ([DELIVERY.md](DELIVERY.md)) |
 | `openmoat audit evidence [--since …] [--until …] [--host …] [--samples N] [--format json]` | evidence for a window per control of OWASP Top 10 for LLM Applications 2025, SOC 2 and ISO/IEC 27001:2022 Annex A: rules that fired, decisions by verdict, redacted samples, the chain head, and the policy, lock and protections now; evidence, not a certification ([COMPLIANCE.md](COMPLIANCE.md)) |
-| `openmoat audit stats [--since 7d] [--until …] [--host …] [--format json]` | how much OpenMoat got in the way over a window, per agent and over all: calls, p50/p95/p99 decision time, verdicts and per 100 calls, calls approved or allowed later, the guard's own failures, and each agent's hook-failure facts; reads the log only ([DISTURBANCE.md](DISTURBANCE.md)) |
+| `openmoat audit stats [--since 7d] [--until …] [--host …] [--format json]` | how much OpenMoat got in the way over a window, per agent and over all: calls, p50/p95/p99 decision time and the same per guard phase ([example](#audit-stats-time-per-guard-phase)), verdicts and per 100 calls, calls approved or allowed later, the guard's own failures, and each agent's hook-failure facts; reads the log only ([DISTURBANCE.md](DISTURBANCE.md)) |
 | `openmoat allow --last [--always]` | turn the last `review` (a command or a file action) into a session grant (24 h; a command's only in the project it was held in) or a permanent rule for exactly that command or those paths |
 | `openmoat allow "<command>" --host <id> --session <id> [--project <dir>]` | approve one exact command for one agent session, in the project of the current directory or `--project` |
 | `openmoat allow --site <host>` · `--dir <path>` · `--remove <id>` | allow a site or a directory until you remove it · take such a rule out again |
@@ -1695,7 +1724,7 @@ reads `~`. The file must not exist yet, and an agent cannot run it.
 | `openmoat hooks list` | list the hook commands, plugin hooks, program-running settings and git programs the agents load besides OpenMoat's hook, and what waits for `openmoat hooks accept`; exits 64 while something waits |
 | `openmoat hooks accept` | review each new or changed one, with the shell classifier's verdict, and record it; until then `openmoat status` names it, and the calls of the agent that loads it are denied when that verdict is deny (held for review for any, with `hooks.foreign: hold`) ([ADR-109](adr/ADR-109-foreign-hook-ledger-and-fail-safe-hooks.md)) |
 | `openmoat gate setup` · `openmoat gate status` · `openmoat gate remove` | turn on, check or turn off the code from your authenticator app that every command loosening the policy then asks for ([above](#ask-for-a-code-before-anything-is-loosened), [ADR-117](adr/ADR-117-loosening-possession-gate.md)) |
-| `openmoat agent-account setup` · `openmoat agent-account status` · `openmoat agent-account remove` | Windows: make, check (exit 1 on drift) or remove the local account `openmoat run` starts agents as, so Windows refuses their reads of what the policy denies too; setup and remove need an administrator terminal and a person, and ask for the gate's code when it is set up ([above](#run-the-agent-as-its-own-windows-account), [ADR-129](adr/ADR-129-windows-agent-account.md)). Elsewhere each exits 64 |
+| `openmoat agent-account setup` · `openmoat agent-account status` · `openmoat agent-account remove` | Windows: make, check (exit 1 on drift) or remove the local account `openmoat run` starts agents as, so Windows refuses their reads of what the policy denies and every connection but the proxy's too; setup and remove need an administrator terminal and a person, and ask for the gate's code when it is set up ([above](#run-the-agent-as-its-own-windows-account), [ADR-129](adr/ADR-129-windows-agent-account.md)). Elsewhere each exits 64 |
 | `openmoat mcp accept [<server>]` | review a changed or new MCP server definition, or tools `openmoat mcp proxy` holds, and accept them; until then that server's tool calls are refused |
 | `openmoat mcp wrap [<server>…] [--sandbox \| --no-sandbox] [--dry-run]` · `openmoat mcp unwrap [<server>…]` | run stdio MCP servers through `openmoat mcp proxy`, which starts one only from a definition a person accepted, in `openmoat run`'s sandbox by default where it can sandbox, not on Windows, whose preview tier needs `--sandbox` (`--no-sandbox` opts out; a rewrap keeps the choice unless a flag is given), pins each tool's title, description, input and output schemas and annotations and hides one that changed or that nobody accepted yet, every tool of a server it has not seen included · point them back; `openmoat init --mcp-proxy` wraps every one, `openmoat uninstall` unwraps them ([ADR-026](adr/ADR-026-mcp-server-and-tool-pinning.md), [ADR-032](adr/ADR-032-mcp-proxy-holds-first-sight.md)) |
 | `openmoat mcp proxy --server <name> [--host <agent>] [--sandbox] [--write PATH]… -- <command>` | the wrapper `openmoat mcp wrap` writes into the agent's configuration; the agent starts it, you do not. `--host` names the agent whose file starts it: only that agent's hook decisions let its calls through (a server wrapped before this option existed gets it the next time you run `openmoat mcp wrap`). It starts the server only when this command line is the one an accepted definition gives; otherwise it answers every request with an error naming `openmoat mcp accept <name>` and exits 1 ([ADR-049](adr/ADR-049-mcp-startup-gate.md)) |
@@ -1713,7 +1742,7 @@ reads `~`. The file must not exist yet, and an agent cannot run it.
 | `openmoat bench [--host …] [--hook <command>] [--verbose] [--format json]` | send the bundled MoatBench scenarios to OpenMoat in a throwaway home, or to any hook command with `--hook` and `--host`, and print the scorecard; the scenarios' commands never run ([MOATBENCH.md](MOATBENCH.md#reproduce-it-openmoat-bench)) |
 | `openmoat bench --report [--host …] [--scratch-dir DIR] [--format json\|markdown]` | the proof report: each security promise per layer (policy decision, host model from OpenMoat's golden payloads, real host, OS sandbox, network boundary) as PASS, FAIL or NOT TESTED HERE with the reason; the OS rows run the attacks under `openmoat run` in the throwaway home; exits 1 when an exercised layer fails ([MOATBENCH.md](MOATBENCH.md#proof-report-openmoat-bench---report)) |
 | `openmoat run … --listen PORT -- <agent>` | let the agent serve one TCP port on loopback alone, such as OpenClaw's Gateway: it may bind no other port or address and still connects only to the proxy; on Linux the port is forwarded from this machine's `127.0.0.1` into the sandbox's network; refused on Linux without a network namespace and on Windows ([SANDBOX.md](SANDBOX.md#openclaw-under-openmoat-run)) |
-| `openmoat run [--isolate\|--no-isolate] [--write PATH]… [--netns auto\|require] [--scrub-env] [--env NAME]… [--verbose] -- <agent> [args]` | run an agent in a sandbox generated from the policy; `--scrub-env` passes on only an allowlist of your environment for this run, as `sandbox.env: scrubbed` does for every run, and `--env NAME` passes one more inherited variable on when the environment is scrubbed ([POLICY.md §9.6](POLICY.md#96-the-environment-openmoat-run-passes-on-sandboxenv)) (macOS, Linux; on Windows a preview tier that refuses writes outside the project, the temp directory and `--write` paths with a write-restricted token and ends the agent's processes with a job, while reads and the network are not held by the OS and batch files are not started, [SANDBOX.md](SANDBOX.md#openmoat-run-on-windows-preview-writes-only)); on Linux the Isolated tier (bubblewrap: only the project, the read roots and temp) is the default where bubblewrap works, and elsewhere it says why and starts the Lightweight tier, which covers less of the project (without bubblewrap it is granted entry by entry and nothing can be created at its top, ADR-090); `--isolate` refuses instead of falling back, `--no-isolate` starts the Lightweight tier and records it in the audit log ([SANDBOX.md](SANDBOX.md#which-tier-openmoat-run-starts)); `--netns=require` refuses to start on Linux where the agent cannot get a network namespace of its own, instead of restricting its network by port only ([SANDBOX.md](SANDBOX.md)); with `sandbox.strict: true` in your policy it starts only with its whole protection score, refusing (exit 64) before anything starts and stopping the agent when the check after the start cannot confirm a feature ([POLICY.md §9.7](POLICY.md#97-strict-mode-sandboxstrict)) |
+| `openmoat run [--isolate\|--no-isolate] [--write PATH]… [--netns auto\|require] [--scrub-env] [--env NAME]… [--verbose] -- <agent> [args]` | run an agent in a sandbox generated from the policy; `--scrub-env` passes on only an allowlist of your environment for this run, as `sandbox.env: scrubbed` does for every run, and `--env NAME` passes one more inherited variable on when the environment is scrubbed ([POLICY.md §9.6](POLICY.md#96-the-environment-openmoat-run-passes-on-sandboxenv)) (macOS, Linux; on Windows a preview tier that refuses writes outside the project, the temp directory and `--write` paths with a write-restricted token and ends the agent's processes with a job, while reads and the network are not held by the OS and batch files are not started, [SANDBOX.md](SANDBOX.md#openmoat-run-on-windows-preview)); on Linux the Isolated tier (bubblewrap: only the project, the read roots and temp) is the default where bubblewrap works, and elsewhere it says why and starts the Lightweight tier, which covers less of the project (without bubblewrap it is granted entry by entry and nothing can be created at its top, ADR-090); `--isolate` refuses instead of falling back, `--no-isolate` starts the Lightweight tier and records it in the audit log ([SANDBOX.md](SANDBOX.md#which-tier-openmoat-run-starts)); `--netns=require` refuses to start on Linux where the agent cannot get a network namespace of its own, instead of restricting its network by port only ([SANDBOX.md](SANDBOX.md)); with `sandbox.strict: true` in your policy it starts only with its whole protection score, refusing (exit 64) before anything starts and stopping the agent when the check after the start cannot confirm a feature ([POLICY.md §9.7](POLICY.md#97-strict-mode-sandboxstrict)) |
 | `openmoat run … --no-snapshot` | take no snapshot of the project before the agent starts and after it exits (recorded in the audit log) |
 | `openmoat run … --print-boundary [--format json] -- <agent>` | print the sandbox boundary this run would start with and start nothing: the tier asked for and the one that starts, each downgrade with why, the network mode, the Landlock ABI, whether tool commands get the relay token, which inherited variables pass and which are withheld (names only, ADR-105), and each restriction's available / configured / applied / tested, and the protection score (`score`: the kernel features in force, weighted to 100, each missing one named, ADR-108); with `sandbox.strict: true` it prints the plan and then refuses, exit 64, when the score is not whole; every run writes the same record, completed by the check after the agent started, to the audit log (`run-boundary`), and on Linux stops an agent whose `/proc` status lacks `NoNewPrivs: 1` or `Seccomp: 2` ([SANDBOX.md](SANDBOX.md#the-runs-boundary-record), [ADR-089](adr/ADR-089-run-boundary-record.md)) |
 | `openmoat snapshot` · `--list [--format json]` · `--prune` | take a snapshot of the project's files · list them with what each left out · remove those past the retention (50 per project, 14 days); refused when an agent started it ([Put the project's files back](#put-the-projects-files-back)) |
@@ -1729,6 +1758,28 @@ is still running, and the proxy exits 1 with the reason on standard error (ADR-1
 On Unix the server runs in its own process group, so what it started is stopped
 with it. If you run `openmoat mcp proxy` by hand in a terminal, Ctrl-C stops the
 proxy but does not reach the server: the server sees its input close.
+
+### `audit stats`: time per guard phase
+
+Each call's audit row records how long `openmoat guard` spent in each of its phases
+(reading the call, checking the policy lock, loading the policy, deciding, reading the
+session's earlier calls, writing the session cache and the audit log). `openmoat audit
+stats` prints a table of them after the per-agent table:
+
+```text
+time per guard phase, all calls in the table (`record` counts up to the row's write):
+  phase     calls  p50 ms  p95 ms  p99 ms
+  stdin         4     0.1     0.1     0.1
+  lock          4     4.0     8.0     8.0
+  compile       4     9.0     9.0     9.0
+  record        4     1.5     1.5     1.5
+```
+
+`calls` is how many calls went through the phase. `--format json` gives the same as
+`phases` in `overall` and in each agent, in microseconds (`p50_us`, `p95_us`, `p99_us`,
+`max_us`). Rows an older build wrote have no phase times, so the table is missing until
+new calls are recorded. Only durations and the phase names are stored
+([DISTURBANCE.md](DISTURBANCE.md#what-each-number-means), ADR-130).
 
 ### `init` for scripts: hooks only and JSON
 
@@ -1751,7 +1802,7 @@ openmoat init --hooks-only --hosts codex --format json
 
 ```json
 {
-  "version": "0.27.0", "dry_run": false, "hooks_only": true,
+  "version": "0.28.0", "dry_run": false, "hooks_only": true,
   "home": "/Users/you/.moat", "binary": "/usr/local/bin/openmoat",
   "binary_sha256": "<the hash the lock records>",
   "lock_path": "/Users/you/.moat/policy.lock", "policy_path": "/Users/you/.moat/policy.yaml",

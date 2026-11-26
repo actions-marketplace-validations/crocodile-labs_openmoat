@@ -105,7 +105,7 @@ something OpenMoat claims to stop.
   every hook and sandbox (malware running as the user, or an agent that can type any
   line into the person's terminal while nobody watches), which reads the secret as it
   could the audit key, or removes it and the state directory and runs `openmoat init`
-  afresh. The secret is an owner-only file, not a keychain item or a hardware key:
+  afresh. The secret is a file readable by the person's account alone, not a keychain item or a hardware key:
   Touch ID and FIDO2 are future work. Without enrolment nothing changes, and every
   loosening is still recorded in the audit log's `policy-changes` session.
 
@@ -348,13 +348,20 @@ something OpenMoat claims to stop.
   name there (deny entries the run sets and reconciles), nor OpenMoat's state, whose list
   names you and `SYSTEM` only. Its password is encrypted for you with DPAPI, so another
   account cannot start a process as it. Its hooks relay to the run because their token's
-  user is a SID registered under HKLM, which only an administrator can write. It does not
-  hold the network (the proxy variables only, until the filters of ADR-129's second
-  step), globs and places made during the run, or places outside the profile that the
-  system's lists open to every account; an administrator, or a process with your full
-  access outside the run, can change the account's entries, which `openmoat agent-account
-  status` then reports; the next run then warns and uses the token instead. Such a run
-  scores at most 70/100.
+  user is a SID registered under HKLM, which only an administrator can write. Its network
+  is held by Windows Filtering Platform filters whose user condition names the account: a
+  hard block at the connect, listen and receive-accept layers, and one permit to
+  `127.0.0.1` and `::1` on the eight ports where runs place their proxy, so a program
+  that ignores `HTTP_PROXY` is refused by Windows (T1, T12). It does not hold name lookups
+  (the DNS Client service resolves under its own account, so a lookup can carry data out:
+  the record's `dns` downgrade), programs of another local user listening on the
+  permitted ports, globs and places made during the run, or places outside the profile
+  that the system's lists open to every account. An administrator, or a process with your
+  full access outside the run, can change the account's entries; only an administrator
+  can change its filters (a filter of higher weight in another sublayer cannot override
+  their hard blocks, but an administrator can delete them). `openmoat agent-account
+  status` then reports the drift, and the next run warns and uses the token instead. Such
+  a run scores 100/100 with the `dns` downgrade named, 70/100 without the filters.
 - **What the Standard tier does not cover.** It is as strong as each host's sandbox
   and OpenMoat's translation, and every host version bump must keep the generated keys
   working (`openmoat doctor` names a weakened setting; the differential suite executes
@@ -732,7 +739,7 @@ something OpenMoat claims to stop.
   the audit log the issue must be recorded in first. What it does not stop: Claude Code keeps the credential in the session's environment file
   (`CLAUDE_ENV_FILE`, under `~/.claude/session-env/`) and runs that file's lines before
   each Bash command, by its own account inlining them into the command line it starts.
-  OpenMoat makes the file owner-only, but a process of the same user that can read
+  OpenMoat makes the file readable by the person's account alone, but a process of the same user that can read
   another session's file, or the command lines of its shell, can send as that session.
   A tainted session that does so sends under a clean session's taint. The default
   policy does not deny reading `~/.claude/session-env/` to sandboxed commands, since
@@ -862,7 +869,7 @@ something OpenMoat claims to stop.
   - *A forged upstream.* The proxy verifies the host's certificate against the system's
     roots with the CONNECT host as the name, before any byte of the request is sent.
   - *The CA's key.* `openmoat proxy ca init` is person-only (`kernel-self` denies an
-    agent's run of it, also under the pseudo-terminal wrappers); the key is owner-only in
+    agent's run of it, also under the pseudo-terminal wrappers); the key is readable by the person's account alone in
     `~/.moat/proxy-ca/`, which `kernel-self` denies reading and no sandbox OpenMoat writes
     grants (Seatbelt, Landlock and bubblewrap in `openmoat run`; Claude Code's
     `denyRead`; Codex and Cursor grant named paths only). `openmoat run` refuses to start
@@ -1670,7 +1677,7 @@ something OpenMoat claims to stop.
   write `~/.moat/audit.db` but cannot read the key (a copy of the file, a backup, a
   bundle, a process or sandbox granted the database and not the key) can no longer
   rewrite events and recompute the hashes after them: the MACs stop matching. That is
-  all the key adds. It is a file beside the log, owner-only and denied to agents by
+  all the key adds. It is a file beside the log, readable by the person's account alone and denied to agents by
   `kernel-self` and the sandboxes, not a secret in hardware or the OS keychain, so code
   running as the user outside any sandbox (the user's account, or an allowed command,
   see "Outside the sandboxes") reads it as easily as it writes the log, and can rewrite

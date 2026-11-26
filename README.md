@@ -45,7 +45,7 @@ shows one line per agent it finds and asks `Protect? [Y/n/d]` (`d` shows the ful
 Every file is backed up before it changes. An agent already set up is not asked again:
 
 ```
-OpenMoat 0.27.0 · protecting the agents on this machine
+OpenMoat 0.28.0 · protecting the agents on this machine
 
   Each file is backed up first · d shows the full diff · openmoat uninstall undoes it
 
@@ -160,7 +160,7 @@ Which agents and operating systems each feature works with: [docs/FEATURES.md](d
 | Part | What it does | Start with |
 |---|---|---|
 | **Policy engine** | Decides each tool call the hook reports from what it really does: it reads the shell the way a shell does, PowerShell too, and checks the files, hosts and programs a call touches. A line built to hide what it runs (sliced strings, escape codes, split words) is held for review (`obfuscated`), and a call it cannot decide in time is denied, never let through. | `openmoat init` |
-| **OS sandboxes** | Confine the code an allowed call runs: the agents' own sandboxes written from the same policy, or `openmoat run` for any agent (on Windows a preview that holds writes outside the project and the agent's processes, not reads or the network, [docs/SANDBOX.md](docs/SANDBOX.md#openmoat-run-on-windows-preview-writes-only); after `openmoat agent-account setup`, once from an administrator terminal, the agent runs as an account of its own and Windows refuses the reads the policy denies too, also a preview, the network still by the proxy variables only, [docs/USAGE.md](docs/USAGE.md#run-the-agent-as-its-own-windows-account)). `openmoat doctor` scores how much of `openmoat run`'s boundary this system can enforce (out of 100), and `sandbox.strict: true` starts a run only with all of it ([docs/SANDBOX.md](docs/SANDBOX.md#the-protection-score-and-strict-mode)). `openmoat init` asks, per hook-only agent, whether typing its name should start it confined, and `openmoat confine` changes that later; OpenClaw's Gateway runs confined on Linux with its one port (`openmoat run --listen`). A microVM tier is designed but not built: `openmoat run --vm` refuses and names what this system would use ([docs/SANDBOX.md](docs/SANDBOX.md#the-microvm-tier-design)). | `openmoat run -- <agent>` · `openmoat confine` · `openmoat agent-account setup` (Windows, preview) · `openmoat run --vm` (design) |
+| **OS sandboxes** | Confine the code an allowed call runs: the agents' own sandboxes written from the same policy, or `openmoat run` for any agent (on Windows a preview that holds writes outside the project and the agent's processes, not reads or the network, [docs/SANDBOX.md](docs/SANDBOX.md#openmoat-run-on-windows-preview); after `openmoat agent-account setup`, once from an administrator terminal, the agent runs as an account of its own and Windows refuses the reads the policy denies and every connection but the proxy's too, through Windows Filtering Platform filters, also a preview, name lookups still through Windows' resolver, [docs/USAGE.md](docs/USAGE.md#run-the-agent-as-its-own-windows-account)). `openmoat doctor` scores how much of `openmoat run`'s boundary this system can enforce (out of 100), and `sandbox.strict: true` starts a run only with all of it ([docs/SANDBOX.md](docs/SANDBOX.md#the-protection-score-and-strict-mode)). `openmoat init` asks, per hook-only agent, whether typing its name should start it confined, and `openmoat confine` changes that later; OpenClaw's Gateway runs confined on Linux with its one port (`openmoat run --listen`). A microVM tier is designed but not built: `openmoat run --vm` refuses and names what this system would use ([docs/SANDBOX.md](docs/SANDBOX.md#the-microvm-tier-design)). | `openmoat run -- <agent>` · `openmoat confine` · `openmoat agent-account setup` (Windows, preview) · `openmoat run --vm` (design) |
 | **Egress proxy** | Lets network from the sandboxes reach only the hosts the policy lists. | `openmoat proxy install` |
 | **Secret broker** | The agent holds a placeholder; the proxy adds your real token for one host only. Under `openmoat run` it can mint short-lived credentials instead, limited to what you list: GitHub App tokens for chosen repositories, AWS credentials with a session policy, Google Cloud access tokens, handed to git and the AWS tools through their own credential helpers ([docs/POLICY.md](docs/POLICY.md#221-minted-narrowed-credentials-source-mint-helper-preview)). | `openmoat secret add gh` |
 | **MCP gateway** | Starts only the MCP servers you accepted, pins each tool's description and the package release the server runs, and holds data one server returned that is sent into another's writing tool. Speaks MCP 2025 and 2026-07-28; refuses a server's sampling requests unless the policy allows them, and links it asks you to open that are not `https` or go to a host the policy does not allow ([docs/USAGE.md](docs/USAGE.md#mcp-servers-through-the-gateway)). Remote (Streamable HTTP) servers too, in preview: you pin the URL and token once, the agent never holds the token, and no request reaches a local, private or metadata address the policy does not name ([docs/USAGE.md](docs/USAGE.md#remote-mcp-servers)). | `openmoat mcp wrap <server>` · `openmoat mcp login <server> --url <url>` (preview) |
@@ -168,16 +168,19 @@ Which agents and operating systems each feature works with: [docs/FEATURES.md](d
 | **Merge check** | Flags what a pull request's changes do: CI and hook edits, agent settings, look-alike packages (in lockfiles too, where a dependency pulls them in), install scripts a lockfile records, a lockfile hash swapped for the same version, new hosts, a policy change that lets more through ([docs/MERGE_CHECK.md](docs/MERGE_CHECK.md#supply-chain)). | `openmoat policy check-diff` |
 | **Policy lock** | Pins the policy and hook files: an agent's call that changes the rules, approves its own block or switches OpenMoat off is denied. It also records the other hooks, plugin hooks and git programs the agents run, and names a new or changed one until you accept it ([docs/USAGE.md](docs/USAGE.md#other-hooks-the-agents-run)). With `openmoat gate setup`, every command that loosens the protection also asks for a code from your authenticator app, and every policy change is recorded in the audit log. | `openmoat doctor` · `openmoat gate setup` |
 
-**New in 0.27.0, and how to start each:**
+**New in 0.28.0, and how to start each:**
 
 | Feature | First command | How to use it |
 |---|---|---|
-| Team rules from a signed bundle that only narrows, and an inventory of each machine | `openmoat team join <folder> --signer "<key line>"` | [Try it in two minutes](docs/TEAM.md#try-it-in-two-minutes) |
-| A code from your authenticator app before anything is loosened | `openmoat gate setup` | [Try it](docs/USAGE.md#ask-for-a-code-before-anything-is-loosened) |
-| Short-lived git and AWS credentials for an agent (preview) | add a `mint:` secret, then `openmoat run -- <agent>` | [Step by step](docs/POLICY.md#221-minted-narrowed-credentials-source-mint-helper-preview) |
-| Typing an agent's name starts it confined | `openmoat confine <agent>` | [How each agent is protected](docs/USAGE.md#how-each-agent-is-protected) |
-| Hidden or obfuscated commands, and PowerShell, are read | nothing to run: on by default after `openmoat policy upgrade` | [See it decide](#see-it-decide) |
-| A slow check is denied, never run unchecked | nothing to run: on by default | [docs/LIMITS.md](docs/LIMITS.md) |
+| Windows: the agent runs as its own account, so Windows refuses its reads and its network as well as its writes (preview) | `openmoat agent-account setup`, once, from an administrator terminal | [Try it](docs/USAGE.md#run-the-agent-as-its-own-windows-account) |
+| Secrets hidden by an encoding, and data in a host name, are held for review | `openmoat policy check --kind fetch '<url>'` (after `openmoat policy upgrade`) | [Try it](docs/POLICY.md#6-the-default-policy-in-one-table) |
+| Data labels by source: one MCP server's data sent through another's tool, however it was reworded (preview) | `openmoat policy check '@data-flow mcp:tickets mcp-send mcp:slack'` | [Try it](docs/POLICY.md#47-data-labels-rules-on-where-data-from-a-source-may-go-preview) |
+| Remote MCP servers through the gateway, the agent never holding the token (preview) | `openmoat mcp login <server> --url <url>` | [Try it](docs/USAGE.md#remote-mcp-servers) |
+| Look-alike packages and install scripts in lockfiles, and a hash swapped for the same version | `openmoat policy check-diff` | [Try it](docs/MERGE_CHECK.md#supply-chain) |
+
+What 0.27.0 added (team rules, the authenticator-code gate, minted credentials, `openmoat
+confine`, hidden commands and PowerShell, the slow-check deny) is in the
+[CHANGELOG](CHANGELOG.md#0270---2026-11-24).
 
 By risk: secrets read or sent (also hidden by base64, hex or URL encoding, held for review:
 `openmoat policy check --kind fetch '<url>'` shows it), data sent to unlisted hosts or
@@ -266,7 +269,7 @@ and [docs/SANDBOX.md](docs/SANDBOX.md).
 
 ## Proof
 
-**Our own scenarios (MoatBench, OpenMoat 0.27.0, macOS 12).** `openmoat bench` sends each
+**Our own scenarios (MoatBench, OpenMoat 0.28.0, macOS 12, the same totals as 0.27.0).** `openmoat bench` sends each
 scenario as each of the 14 agents' hook payloads:
 
 | | Runs | Denied | Held for review | Left to OS sandbox | Left to agent's prompt | Allowed |
@@ -279,11 +282,11 @@ scenario as each of the 14 agents' hook payloads:
 The scenarios were written by OpenMoat's authors, so this shows that the policy and the
 benchmark agree, not that OpenMoat is complete ([docs/MOATBENCH.md](docs/MOATBENCH.md)).
 The [MoatBench repository](https://github.com/crocodile-labs/moatbench), which anyone can
-re-run, last published OpenMoat 0.19.0
-([results](https://github.com/crocodile-labs/moatbench/tree/main/runs/2026-11-09-openmoat-0.19.0)).
+re-run, last published OpenMoat 0.28.0: 43 of 45 attacks stopped, 0 of 84 ordinary steps blocked
+([results](https://github.com/crocodile-labs/moatbench/tree/main/runs/2026-11-25-openmoat-0.28.0)).
 
 **Attack sets written by others (decision engine, default policy).** 0.25.0 → 0.26.0
-(the rules this measurement led to, ADR-112) → 0.27.0 → the next release (ADR-123:
+(the rules this measurement led to, ADR-112) → 0.27.0 → 0.28.0 (ADR-123:
 secrets hidden by an encoding and data in host names, held for review):
 
 | Benchmark | Cases | Denied | Denied or held | Allowed | False positives |
@@ -339,13 +342,13 @@ The full list: [docs/LIMITS.md](docs/LIMITS.md). Per agent:
 
 ## Status
 
-**Usable daily.** The latest release is `0.27.0`. The policy format and the commands can
+**Usable daily.** The latest release is `0.28.0`. The policy format and the commands can
 still change before 1.0; every such change has a CHANGELOG line. What comes next:
 [docs/ROADMAP.md](docs/ROADMAP.md). To upgrade, update the binary the way you installed
 it, then run `openmoat doctor` and `openmoat policy upgrade` in your own terminal
 ([docs/INSTALL.md](docs/INSTALL.md#upgrading)); each release's own steps are in its
-[CHANGELOG](CHANGELOG.md) "Upgrading" line, and what 0.27.0 changes
-for you is in [docs/INSTALL.md](docs/INSTALL.md#from-0260-to-0270). Releases up to 0.7.0 called the command
+[CHANGELOG](CHANGELOG.md) "Upgrading" line, and what 0.28.0 changes
+for you is in [docs/INSTALL.md](docs/INSTALL.md#from-0270-to-0280). Releases up to 0.7.0 called the command
 `moat`; that name still runs `openmoat` for a few releases.
 
 ## Contributing
